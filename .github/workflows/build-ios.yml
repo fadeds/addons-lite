@@ -65,7 +65,16 @@ jobs:
           echo "App 版本: $VERSION"
 
       - name: 生成 Xcode 工程
-        run: xcodegen generate
+        run: |
+          set -o pipefail
+          xcodegen generate 2>&1 | tee "$RUNNER_TEMP/xcodegen.log"
+          STATUS=${PIPESTATUS[0]}
+          if [ "$STATUS" -ne 0 ]; then
+            tail -n 20 "$RUNNER_TEMP/xcodegen.log" | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit "$STATUS"
+          fi
 
       - name: 读取 Bundle ID
         id: bundle
@@ -174,8 +183,9 @@ jobs:
 
       - name: Archive
         run: |
-          set -euo pipefail
+          set -uo pipefail
           VERSION="${{ steps.version.outputs.version }}"
+          LOG="$RUNNER_TEMP/archive.log"
 
           if [ "$SIGNED" = "true" ]; then
             xcodebuild archive \
@@ -189,7 +199,8 @@ jobs:
               CODE_SIGN_IDENTITY="${{ steps.sign.outputs.identity }}" \
               APP_PROFILE="$APP_PROFILE_UUID" \
               EXT_PROFILE="$EXT_PROFILE_UUID" \
-              MARKETING_VERSION="$VERSION"
+              MARKETING_VERSION="$VERSION" 2>&1 | tee "$LOG"
+            STATUS=${PIPESTATUS[0]}
           else
             echo "无签名构建（TrollStore / 自签工具使用）"
             xcodebuild archive \
@@ -202,7 +213,20 @@ jobs:
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_IDENTITY="" \
               CODE_SIGN_ENTITLEMENTS="" \
-              MARKETING_VERSION="$VERSION"
+              MARKETING_VERSION="$VERSION" 2>&1 | tee "$LOG"
+            STATUS=${PIPESTATUS[0]}
+          fi
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "构建失败，提取错误："
+            grep -aE "error:|BUILD FAILED|The following build commands failed" "$LOG" \
+              | head -n 10 \
+              | while IFS= read -r line; do
+                  echo "::error::$line"
+                done
+            echo "==== 日志末尾 50 行 ===="
+            tail -n 50 "$LOG"
+            exit "$STATUS"
           fi
 
       - name: 导出 IPA（签名）
