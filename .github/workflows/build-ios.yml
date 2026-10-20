@@ -23,6 +23,8 @@ on:
           - development
         default: ad-hoc
   push:
+    branches:
+      - master
     tags:
       - "v*"
 
@@ -54,10 +56,12 @@ jobs:
       - name: 确定版本号
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.ref_type }}" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
           elif [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="0.1.${{ github.run_number }}"
           else
             VERSION=$(grep -m1 "MARKETING_VERSION:" project.yml | awk '{print $2}' | tr -d '"')
           fi
@@ -350,14 +354,20 @@ jobs:
             ${{ runner.temp }}/manifest.plist
           if-no-files-found: error
 
-      - name: 发布到 GitHub Release（仅 tag）
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'push' && github.ref == 'refs/heads/master')
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           IPA="$RUNNER_TEMP/VideoSniffer-v${VERSION}.ipa"
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v${VERSION}"
+          fi
           TITLE="VideoSniffer v${VERSION}"
 
           ASSETS=("$IPA")
@@ -365,14 +375,16 @@ jobs:
             ASSETS+=("$RUNNER_TEMP/manifest.plist")
           fi
 
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --title "$TITLE"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            gh release edit "$TAG" --title "$TITLE" --latest
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$TAG" \
               "${ASSETS[@]}" \
               --title "$TITLE" \
-              --generate-notes
+              --target "$GITHUB_SHA" \
+              --generate-notes \
+              --latest
           fi
 
       - name: 清理钥匙串
