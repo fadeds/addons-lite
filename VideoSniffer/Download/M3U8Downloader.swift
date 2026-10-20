@@ -209,7 +209,9 @@ enum M3U8Downloader {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
-        config.httpAdditionalHeaders = referer.map { ["Referer": $0] } ?? [:]
+        if let referer = referer {
+            config.httpAdditionalHeaders = ["Referer": referer]
+        }
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
     }

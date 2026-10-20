@@ -144,6 +144,7 @@ struct FileListView: View {
         reload()
     }
 
+    @MainActor
     private func saveToPhotos(_ file: FileInfo) async {
         let status = await Self.requestAddOnlyAuthorization()
         guard status == .authorized || status == .limited else {

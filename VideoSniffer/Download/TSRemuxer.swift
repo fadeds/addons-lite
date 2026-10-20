@@ -90,14 +90,15 @@ enum TSRemuxer {
                         let transformed = track.naturalSize.applying(track.preferredTransform)
                         let width = evenDimension(abs(transformed.width))
                         let height = evenDimension(abs(transformed.height))
+                        let compression: [String: Any] = [
+                            AVVideoAverageBitRateKey: max(width * height * 4, 2_500_000),
+                            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+                        ]
                         let videoSettings: [String: Any] = [
                             AVVideoCodecKey: AVVideoCodecType.h264,
                             AVVideoWidthKey: width,
                             AVVideoHeightKey: height,
-                            AVVideoCompressionPropertiesKey: [
-                                AVVideoAverageBitRateKey: max(width * height * 4, 2_500_000),
-                                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
-                            ]
+                            AVVideoCompressionPropertiesKey: compression
                         ]
                         writerInput = AVAssetWriterInput(
                             mediaType: .video,

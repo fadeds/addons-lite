@@ -27,7 +27,8 @@ enum Storage {
         // 临时目录不参与 iCloud 备份
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        try? tmpURL.setResourceValues(values)
+        var tmp = tmpURL
+        try? tmp.setResourceValues(values)
     }
 
     static func load<T: Decodable>(_ type: T.Type, from fileName: String) -> T? {
