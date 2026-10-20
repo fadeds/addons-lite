@@ -1,0 +1,27 @@
+# XcodeGen 产物
+*.xcodeproj
+*.xcworkspace
+!default.xcworkspace
+
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+
+# SPM
+.build/
+.swiftpm/
+
+# CI 临时文件
+exportOptions.plist
+*.p12
+*.mobileprovision

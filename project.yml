@@ -1,0 +1,61 @@
+name: VideoSniffer
+options:
+  bundleIdPrefix: com.videosniffer
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: 5.9
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+    GCC_C_LANGUAGE_STANDARD: gnu17
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+targets:
+  VideoSniffer:
+    type: application
+    platform: iOS
+    sources:
+      - path: VideoSniffer
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.videosniffer.app
+        INFOPLIST_FILE: VideoSniffer/Info.plist
+        PRODUCT_NAME: VideoSniffer
+        PROVISIONING_PROFILE_SPECIFIER: $(APP_PROFILE)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+    dependencies:
+      - target: VideoSnifferExtension
+        embed: true
+    scheme:
+      build:
+        targets:
+          VideoSniffer: all
+      run:
+        config: Debug
+      archive:
+        config: Release
+
+  VideoSnifferExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: VideoSnifferExtension/SafariWebExtensionHandler.swift
+      - path: VideoSnifferExtension/Extension
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.videosniffer.app.extension
+        INFOPLIST_FILE: VideoSnifferExtension/Info.plist
+        PRODUCT_NAME: VideoSnifferExtension
+        PROVISIONING_PROFILE_SPECIFIER: $(EXT_PROFILE)

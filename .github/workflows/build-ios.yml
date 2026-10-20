@@ -1,0 +1,352 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（如 1.0.0；留空则用 project.yml 中的版本）"
+        required: false
+        default: ""
+      signing:
+        description: "打包方式：auto=有证书则签名，否则无签名（TrollStore 请选 unsigned）"
+        type: choice
+        options:
+          - auto
+          - unsigned
+          - signed
+        default: auto
+      export_method:
+        description: "签名方式（仅 signed/auto 且有证书时生效）"
+        type: choice
+        options:
+          - ad-hoc
+          - development
+        default: ad-hoc
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  SCHEME: VideoSniffer
+  XCODEPROJ: VideoSniffer.xcodeproj
+
+jobs:
+  build:
+    name: 打包 ipa
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 确定版本号
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(grep -m1 "MARKETING_VERSION:" project.yml | awk '{print $2}' | tr -d '"')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "App 版本: $VERSION"
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 读取 Bundle ID
+        id: bundle
+        run: |
+          IDS=($(grep -o "PRODUCT_BUNDLE_IDENTIFIER: .*" project.yml | awk '{print $2}'))
+          echo "app=${IDS[0]}" >> "$GITHUB_OUTPUT"
+          echo "ext=${IDS[1]}" >> "$GITHUB_OUTPUT"
+          echo "App: ${IDS[0]} / Extension: ${IDS[1]}"
+
+      - name: 确定签名模式
+        id: sign
+        env:
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISION_BASE64: ${{ secrets.PROVISION_BASE64 }}
+          EXT_PROVISION_BASE64: ${{ secrets.EXT_PROVISION_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          MODE="${{ inputs.signing || 'auto' }}"
+
+          HAS_SECRETS=true
+          for value in "$P12_BASE64" "$P12_PASSWORD" "$PROVISION_BASE64" "$EXT_PROVISION_BASE64" "$KEYCHAIN_PASSWORD"; do
+            [ -n "$value" ] || HAS_SECRETS=false
+          done
+
+          case "$MODE" in
+            unsigned)
+              SIGNED=false
+              ;;
+            signed)
+              if [ "$HAS_SECRETS" != "true" ]; then
+                echo "::error::signing=signed 但缺少证书或描述文件 secrets"
+                exit 1
+              fi
+              SIGNED=true
+              ;;
+            *)
+              [ "$HAS_SECRETS" = "true" ] && SIGNED=true || SIGNED=false
+              ;;
+          esac
+
+          METHOD="${{ inputs.export_method || 'ad-hoc' }}"
+          if [ "$METHOD" = "development" ]; then
+            IDENTITY="Apple Development"
+          else
+            IDENTITY="Apple Distribution"
+          fi
+
+          echo "method=$METHOD" >> "$GITHUB_OUTPUT"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "signed=$SIGNED" >> "$GITHUB_OUTPUT"
+          echo "SIGNED=$SIGNED" >> "$GITHUB_ENV"
+          echo "签名模式: signed=$SIGNED method=$METHOD"
+
+      - name: 导入证书与描述文件
+        if: steps.sign.outputs.signed == 'true'
+        env:
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISION_BASE64: ${{ secrets.PROVISION_BASE64 }}
+          EXT_PROVISION_BASE64: ${{ secrets.EXT_PROVISION_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" build.keychain > /dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          PROFILES_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILES_DIR"
+
+          install_profile() {
+            local b64="$1"
+            local tmp="$2"
+            echo "$b64" | base64 --decode > "$tmp"
+            local uuid
+            uuid=$(security cms -D -i "$tmp" | plutil -extract UUID raw -)
+            mv "$tmp" "$PROFILES_DIR/$uuid.mobileprovision"
+            echo "$uuid"
+          }
+
+          APP_UUID=$(install_profile "$PROVISION_BASE64" "$RUNNER_TEMP/app.profile")
+          EXT_UUID=$(install_profile "$EXT_PROVISION_BASE64" "$RUNNER_TEMP/ext.profile")
+
+          TEAM_ID=$(security cms -D -i "$PROFILES_DIR/$APP_UUID.mobileprovision" \
+            | plutil -extract Entitlements.team-identifier raw -)
+
+          {
+            echo "APP_PROFILE_UUID=$APP_UUID"
+            echo "EXT_PROFILE_UUID=$EXT_UUID"
+            echo "TEAM_ID=$TEAM_ID"
+          } >> "$GITHUB_ENV"
+
+          echo "App Profile: $APP_UUID"
+          echo "Extension Profile: $EXT_UUID"
+          echo "Team: $TEAM_ID"
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if [ "$SIGNED" = "true" ]; then
+            xcodebuild archive \
+              -project "$XCODEPROJ" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -destination "generic/platform=iOS" \
+              -archivePath "$RUNNER_TEMP/VideoSniffer.xcarchive" \
+              DEVELOPMENT_TEAM="$TEAM_ID" \
+              CODE_SIGN_STYLE=Manual \
+              CODE_SIGN_IDENTITY="${{ steps.sign.outputs.identity }}" \
+              APP_PROFILE="$APP_PROFILE_UUID" \
+              EXT_PROFILE="$EXT_PROFILE_UUID" \
+              MARKETING_VERSION="$VERSION"
+          else
+            echo "无签名构建（TrollStore / 自签工具使用）"
+            xcodebuild archive \
+              -project "$XCODEPROJ" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -destination "generic/platform=iOS" \
+              -archivePath "$RUNNER_TEMP/VideoSniffer.xcarchive" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGN_ENTITLEMENTS="" \
+              MARKETING_VERSION="$VERSION"
+          fi
+
+      - name: 导出 IPA（签名）
+        if: steps.sign.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          METHOD="${{ steps.sign.outputs.method }}"
+          IDENTITY="${{ steps.sign.outputs.identity }}"
+          APP_ID="${{ steps.bundle.outputs.app }}"
+          EXT_ID="${{ steps.bundle.outputs.ext }}"
+
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>method</key>
+          	<string>$METHOD</string>
+          	<key>teamID</key>
+          	<string>$TEAM_ID</string>
+          	<key>signingStyle</key>
+          	<string>manual</string>
+          	<key>signingCertificate</key>
+          	<string>$IDENTITY</string>
+          	<key>provisioningProfiles</key>
+          	<dict>
+          		<key>$APP_ID</key>
+          		<string>$APP_PROFILE_UUID</string>
+          		<key>$EXT_ID</key>
+          		<string>$EXT_PROFILE_UUID</string>
+          	</dict>
+          	<key>stripSwiftSymbols</key>
+          	<true/>
+          	<key>uploadSymbols</key>
+          	<true/>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/VideoSniffer.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+
+          IPA=$(ls "$RUNNER_TEMP/export"/*.ipa | head -n 1)
+          mv "$IPA" "$RUNNER_TEMP/VideoSniffer-v${{ steps.version.outputs.version }}.ipa"
+
+      - name: 打包 IPA（无签名）
+        if: steps.sign.outputs.signed != 'true'
+        run: |
+          set -euo pipefail
+          IPA_PATH="$RUNNER_TEMP/VideoSniffer-v${{ steps.version.outputs.version }}.ipa"
+
+          APP=$(find "$RUNNER_TEMP/VideoSniffer.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "::error::归档中找不到 .app"
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/Payload"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          ( cd "$RUNNER_TEMP" && zip -qry "$(basename "$IPA_PATH")" Payload )
+          rm -rf "$RUNNER_TEMP/Payload"
+
+          ls -lh "$IPA_PATH"
+
+      - name: 生成 manifest.plist（仅签名 + tag）
+        if: startsWith(github.ref, 'refs/tags/') && steps.sign.outputs.signed == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_ID="${{ steps.bundle.outputs.app }}"
+          IPA_NAME="VideoSniffer-v${VERSION}.ipa"
+          IPA_URL="https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/$IPA_NAME"
+
+          cat > "$RUNNER_TEMP/manifest.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>items</key>
+          	<array>
+          		<dict>
+          			<key>assets</key>
+          			<array>
+          				<dict>
+          					<key>kind</key>
+          					<string>software-package</string>
+          					<key>url</key>
+          					<string>$IPA_URL</string>
+          				</dict>
+          			</array>
+          			<key>metadata</key>
+          			<dict>
+          				<key>bundle-identifier</key>
+          				<string>$APP_ID</string>
+          				<key>bundle-version</key>
+          				<string>$VERSION</string>
+          				<key>kind</key>
+          				<string>software</string>
+          				<key>title</key>
+          				<string>视频嗅探</string>
+          			</dict>
+          		</dict>
+          	</array>
+          </dict>
+          </plist>
+          EOF
+          echo "manifest 已生成: $IPA_URL"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoSniffer-v${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/VideoSniffer-v*.ipa
+            ${{ runner.temp }}/manifest.plist
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IPA="$RUNNER_TEMP/VideoSniffer-v${VERSION}.ipa"
+          TITLE="VideoSniffer v${VERSION}"
+
+          ASSETS=("$IPA")
+          if [ -f "$RUNNER_TEMP/manifest.plist" ]; then
+            ASSETS+=("$RUNNER_TEMP/manifest.plist")
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "$TITLE"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "${ASSETS[@]}" \
+              --title "$TITLE" \
+              --generate-notes
+          fi
+
+      - name: 清理钥匙串
+        if: always()
+        run: security delete-keychain build.keychain 2>/dev/null || true

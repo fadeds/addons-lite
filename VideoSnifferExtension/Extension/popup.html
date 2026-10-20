@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>视频嗅探</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>检测到的视频</h1>
+    <button id="clear" type="button" disabled>清空</button>
+  </header>
+
+  <div id="status" class="hint">正在读取…</div>
+  <ul id="list"></ul>
+
+  <div class="hint footer-hint">
+    播放网页中的视频后打开本面板，点击「在 App 打开」跳转到视频嗅探进行下载（支持 m3u8 / mp4）。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

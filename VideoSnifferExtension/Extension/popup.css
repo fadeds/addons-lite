@@ -1,0 +1,163 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1c1c1e;
+  --sub: #8e8e93;
+  --line: #e5e5ea;
+  --accent: #0a84ff;
+  --badge-hls: #ff9f0a;
+  --badge-mp4: #30d158;
+  --badge-flv: #64d2ff;
+  --badge-webm: #bf5af2;
+  --badge-other: #8e8e93;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --fg: #f2f2f7;
+    --sub: #98989d;
+    --line: #38383a;
+    --accent: #0a84ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 360px;
+  max-height: 560px;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Helvetica Neue", sans-serif;
+  font-size: 14px;
+}
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+button {
+  appearance: none;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+button:disabled {
+  color: var(--sub);
+  opacity: 0.5;
+}
+
+.hint {
+  padding: 24px 16px;
+  color: var(--sub);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-line;
+  text-align: center;
+}
+
+.footer-hint {
+  padding: 12px 16px 20px;
+  border-top: 1px solid var(--line);
+}
+
+#list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.badge {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.badge.hls { background: var(--badge-hls); }
+.badge.mp4 { background: var(--badge-mp4); }
+.badge.flv { background: var(--badge-flv); }
+.badge.webm { background: var(--badge-webm); }
+.badge.other { background: var(--badge-other); }
+
+.info {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.open-btn {
+  background: var(--accent);
+  color: #fff !important;
+  border-radius: 14px;
+  padding: 5px 10px !important;
+  font-size: 12px !important;
+  font-weight: 600;
+}
+
+.del-btn {
+  font-size: 11px !important;
+  color: var(--sub) !important;
+}
