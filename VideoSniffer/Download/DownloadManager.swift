@@ -23,7 +23,7 @@ final class BackgroundCompletionBox: @unchecked Sendable {
 }
 
 @MainActor
-final class DownloadManager: ObservableObject {
+final class DownloadManager: NSObject, ObservableObject {
     static let shared = DownloadManager()
     static let tasksFile = "download_tasks.json"
     static let backgroundIdentifier = "com.videosniffer.app.background-downloads"
@@ -42,7 +42,8 @@ final class DownloadManager: ObservableObject {
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
-    private init() {
+    private override init() {
+        super.init()
         tasks = Storage.load([DownloadTaskRecord].self, from: DownloadManager.tasksFile) ?? []
         restoreInterruptedTasks()
         _ = backgroundSession
@@ -154,7 +155,8 @@ final class DownloadManager: ObservableObject {
 
         if video.isHLS {
             let task = Task { [weak self] in
-                await self?.runHLS(id: id, video: video)
+                guard let self else { return }
+                await self.runHLS(id: id, video: video)
             }
             hlsTasks[id] = task
         } else {
