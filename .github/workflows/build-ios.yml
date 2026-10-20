@@ -66,6 +66,7 @@ jobs:
 
       - name: 生成 Xcode 工程
         run: |
+          set +e
           set -o pipefail
           xcodegen generate 2>&1 | tee "$RUNNER_TEMP/xcodegen.log"
           STATUS=${PIPESTATUS[0]}
@@ -183,6 +184,7 @@ jobs:
 
       - name: Archive
         run: |
+          set +e
           set -uo pipefail
           VERSION="${{ steps.version.outputs.version }}"
           LOG="$RUNNER_TEMP/archive.log"
@@ -219,11 +221,13 @@ jobs:
 
           if [ "$STATUS" -ne 0 ]; then
             echo "构建失败，提取错误："
-            grep -aE "error:|BUILD FAILED|The following build commands failed" "$LOG" \
-              | head -n 10 \
-              | while IFS= read -r line; do
-                  echo "::error::$line"
-                done
+            ERRORS=$(grep -aE "error:|BUILD FAILED|The following build commands failed" "$LOG" | head -n 10)
+            if [ -z "$ERRORS" ]; then
+              ERRORS=$(tail -n 10 "$LOG")
+            fi
+            printf '%s\n' "$ERRORS" | cut -c1-600 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
             echo "==== 日志末尾 50 行 ===="
             tail -n 50 "$LOG"
             exit "$STATUS"

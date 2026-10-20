@@ -158,8 +158,8 @@ enum M3U8Downloader {
         fileManager.createFile(atPath: mergedURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: mergedURL)
         do {
-            if let init = initData {
-                try handle.write(contentsOf: init)
+            if let initSegment = initData {
+                try handle.write(contentsOf: initSegment)
             }
             for index in 0..<total {
                 let segmentURL = workDir.appendingPathComponent(
