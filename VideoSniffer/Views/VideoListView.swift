@@ -116,7 +116,7 @@ struct VideoListView: View {
                 } header: {
                     Text("Referer（可选）")
                 } footer: {
-                    Text("报 HTTP 403/439 时填写视频所在网页地址")
+                    Text("一般留空即可，403/439 时会自动探测常见 Referer")
                 }
             }
             .navigationTitle("手动添加")

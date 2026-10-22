@@ -10,14 +10,14 @@ enum M3U8Stage {
 
 enum M3U8DownloadError: Error, LocalizedError {
     case invalidURL
-    case fetchFailed(String)
+    case fetchFailed(String, Int)
     case parseFailed(String)
     case unsupported(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "视频链接无效"
-        case .fetchFailed(let detail): return "网络请求失败：\(detail)"
+        case .fetchFailed(let detail, _): return "网络请求失败：\(detail)"
         case .parseFailed(let detail): return "解析失败：\(detail)"
         case .unsupported(let detail): return "暂不支持：\(detail)"
         }
@@ -36,12 +36,16 @@ enum M3U8Downloader {
             throw M3U8DownloadError.invalidURL
         }
 
-        let session = makeSession(referer: video.referer)
+        let session = makeSession()
         defer { session.finishTasksAndInvalidate() }
 
-        // 1. 拉取播放列表
+        // 1. 拉取播放列表（403 时自动探测 Referer）
         progress?(.playlist, 0.02, "拉取播放列表")
-        let text = try await fetchText(playlistURL, session: session)
+        var (text, activeReferer) = try await fetchPlaylistText(
+            playlistURL,
+            session: session,
+            preferred: video.referer
+        )
         var playlist = try M3U8Parser.parse(text, baseURL: playlistURL)
 
         if playlist.isMaster {
@@ -51,8 +55,12 @@ enum M3U8Downloader {
             let label = variant.resolution.map { "清晰度 \($0)" }
                 ?? "带宽 \(variant.bandwidth)"
             progress?(.playlist, 0.04, "选中\(label)")
-            let variantText = try await fetchText(variant.url, session: session)
-            playlist = try M3U8Parser.parse(variantText, baseURL: variant.url)
+            (text, activeReferer) = try await fetchPlaylistText(
+                variant.url,
+                session: session,
+                preferred: activeReferer
+            )
+            playlist = try M3U8Parser.parse(text, baseURL: variant.url)
         }
 
         guard !playlist.segments.isEmpty else {
@@ -69,7 +77,11 @@ enum M3U8Downloader {
                 guard let keyURL = encryption.keyURL else {
                     throw M3U8DownloadError.unsupported("AES-128 密钥地址缺失")
                 }
-                let keyData = try await fetchData(keyURL, session: session)
+                let keyData = try await fetchData(
+                    keyURL,
+                    session: session,
+                    referer: activeReferer
+                )
                 guard keyData.count == 16 else {
                     throw M3U8DownloadError.unsupported("AES-128 密钥长度异常")
                 }
@@ -88,6 +100,7 @@ enum M3U8Downloader {
             initData = try await fetchData(
                 mapURL,
                 session: session,
+                referer: activeReferer,
                 byteRange: playlist.initMapRange
             )
         }
@@ -119,7 +132,7 @@ enum M3U8Downloader {
                     let data = try await fetchSegment(
                         segment,
                         session: session,
-                        referer: video.referer
+                        referer: activeReferer
                     )
 
                     var payload = data
@@ -208,35 +221,106 @@ enum M3U8Downloader {
     private static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
         + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
-    private static func makeSession(referer: String?) -> URLSession {
+    private static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
-
-        var headers: [String: String] = [
-            "User-Agent": userAgent,
-            "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br"
-        ]
-        if let referer, !referer.isEmpty {
-            headers["Referer"] = referer
-            if let refURL = URL(string: referer),
-               let scheme = refURL.scheme,
-               let host = refURL.host {
-                headers["Origin"] = "\(scheme)://\(host)"
-            }
-        }
-        config.httpAdditionalHeaders = headers
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
     }
 
-    private static func fetchText(_ url: URL, session: URLSession) async throws -> String {
-        let data = try await fetchData(url, session: session)
+    private static func makeRequest(
+        _ url: URL,
+        referer: String?,
+        byteRange: M3U8ByteRange?
+    ) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+        if let referer, !referer.isEmpty {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
+            if let refURL = URL(string: referer),
+               let scheme = refURL.scheme,
+               let host = refURL.host {
+                request.setValue("\(scheme)://\(host)", forHTTPHeaderField: "Origin")
+            }
+        }
+        if let range = byteRange {
+            let end = range.offset + range.length - 1
+            request.setValue("bytes=\(range.offset)-\(end)", forHTTPHeaderField: "Range")
+        }
+        return request
+    }
+
+    /// 常见 CDN 需要的 Referer（域名 → 候选页面）
+    private static let knownReferers: [String: [String]] = [
+        "surrit.com": [
+            "https://missav.ws/",
+            "https://missav.live/",
+            "https://missav.com/"
+        ]
+    ]
+
+    private static func candidateReferers(for url: URL, excluding: String?) -> [String] {
+        guard let scheme = url.scheme, let host = url.host else { return [] }
+        var candidates: [String] = ["\(scheme)://\(host)/"]
+        if !host.hasPrefix("www.") {
+            candidates.append("\(scheme)://www.\(host)/")
+        }
+
+        var parts = host.components(separatedBy: ".")
+        while parts.count > 2 {
+            parts.removeFirst()
+            candidates.append("\(scheme)://\(parts.joined(separator: "."))/")
+        }
+
+        for domain in [host, parts.joined(separator: ".")] {
+            if let known = knownReferers[domain] {
+                candidates.append(contentsOf: known)
+            }
+        }
+
+        var seen: Set<String> = []
+        return candidates.filter { candidate in
+            guard candidate != excluding else { return false }
+            return seen.insert(candidate).inserted
+        }
+    }
+
+    private static func decodeText(_ data: Data) throws -> String {
         if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
         if let latin = String(data: data, encoding: .isoLatin1) { return latin }
         throw M3U8DownloadError.parseFailed("播放列表编码无法识别")
+    }
+
+    /// 拉取播放列表；遇到 401/403/439 时自动切换候选 Referer 重试
+    private static func fetchPlaylistText(
+        _ url: URL,
+        session: URLSession,
+        preferred: String?
+    ) async throws -> (String, String?) {
+        do {
+            let data = try await fetchData(url, session: session, referer: preferred)
+            return (try decodeText(data), preferred)
+        } catch let error as M3U8DownloadError {
+            guard case .fetchFailed(_, let status) = error,
+                  status == 401 || status == 403 || status == 439
+            else { throw error }
+        }
+
+        var lastError: Error?
+        for candidate in candidateReferers(for: url, excluding: preferred) {
+            try Task.checkCancellation()
+            do {
+                let data = try await fetchData(url, session: session, referer: candidate)
+                return (try decodeText(data), candidate)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? M3U8DownloadError.fetchFailed("HTTP 403（Referer 探测失败）", 403)
     }
 
     private static func fetchSegment(
@@ -244,20 +328,21 @@ enum M3U8Downloader {
         session: URLSession,
         referer: String?
     ) async throws -> Data {
-        try await fetchData(segment.url, session: session, byteRange: segment.byteRange)
+        try await fetchData(
+            segment.url,
+            session: session,
+            referer: referer,
+            byteRange: segment.byteRange
+        )
     }
 
     private static func fetchData(
         _ url: URL,
         session: URLSession,
+        referer: String? = nil,
         byteRange: M3U8ByteRange? = nil
     ) async throws -> Data {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 30
-        if let range = byteRange {
-            let end = range.offset + range.length - 1
-            request.setValue("bytes=\(range.offset)-\(end)", forHTTPHeaderField: "Range")
-        }
+        let request = makeRequest(url, referer: referer, byteRange: byteRange)
 
         var lastError: Error?
         for attempt in 0..<3 {
@@ -272,13 +357,16 @@ enum M3U8Downloader {
                         let hint = errnoHint(status: http.statusCode)
                         let extra = snippet.isEmpty ? "" : " | \(snippet)"
                         throw M3U8DownloadError.fetchFailed(
-                            "HTTP \(http.statusCode) \(hint)\(extra)"
+                            "HTTP \(http.statusCode) \(hint)\(extra)",
+                            http.statusCode
                         )
                     }
                 }
                 return data
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as M3U8DownloadError {
+                throw error
             } catch {
                 lastError = error
                 if attempt < 2 {
@@ -288,7 +376,7 @@ enum M3U8Downloader {
             }
         }
         let detail = lastError?.localizedDescription ?? "未知错误"
-        throw M3U8DownloadError.fetchFailed("\(url.lastPathComponent): \(detail)")
+        throw M3U8DownloadError.fetchFailed("\(url.lastPathComponent): \(detail)", 0)
     }
 
     private static func errnoHint(status: Int) -> String {
