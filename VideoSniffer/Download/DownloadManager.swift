@@ -165,6 +165,11 @@ final class DownloadManager: NSObject, ObservableObject {
                 return
             }
             var request = URLRequest(url: url)
+            request.setValue(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                    + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                forHTTPHeaderField: "User-Agent"
+            )
             if let referer = video.referer {
                 request.setValue(referer, forHTTPHeaderField: "Referer")
             }
@@ -257,6 +262,19 @@ extension DownloadManager: URLSessionDownloadDelegate {
         didFinishDownloadingTo location: URL
     ) {
         guard let id = downloadTask.taskDescription else { return }
+
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            let status = http.statusCode
+            Task { @MainActor [weak self] in
+                self?.set(id: id) { record in
+                    record.state = .failed
+                    record.errorMessage = "HTTP \(status)（服务器拒绝访问，可能需要 Referer/Cookie）"
+                    record.finishedAt = .now
+                }
+            }
+            return
+        }
 
         let suggested = downloadTask.response?.suggestedFilename
         var moveError: Error?

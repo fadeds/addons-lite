@@ -205,13 +205,29 @@ enum M3U8Downloader {
 
     // MARK: - HTTP
 
+    private static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
     private static func makeSession(referer: String?) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
-        if let referer = referer {
-            config.httpAdditionalHeaders = ["Referer": referer]
+
+        var headers: [String: String] = [
+            "User-Agent": userAgent,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br"
+        ]
+        if let referer, !referer.isEmpty {
+            headers["Referer"] = referer
+            if let refURL = URL(string: referer),
+               let scheme = refURL.scheme,
+               let host = refURL.host {
+                headers["Origin"] = "\(scheme)://\(host)"
+            }
         }
+        config.httpAdditionalHeaders = headers
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
     }
@@ -251,7 +267,13 @@ enum M3U8Downloader {
                 if let http = response as? HTTPURLResponse {
                     let ok = (200..<300).contains(http.statusCode) || http.statusCode == 206
                     if !ok {
-                        throw M3U8DownloadError.fetchFailed("HTTP \(http.statusCode) \(url.lastPathComponent)")
+                        let snippet = String(data: data.prefix(160), encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        let hint = errnoHint(status: http.statusCode)
+                        let extra = snippet.isEmpty ? "" : " | \(snippet)"
+                        throw M3U8DownloadError.fetchFailed(
+                            "HTTP \(http.statusCode) \(hint)\(extra)"
+                        )
                     }
                 }
                 return data
@@ -267,6 +289,16 @@ enum M3U8Downloader {
         }
         let detail = lastError?.localizedDescription ?? "未知错误"
         throw M3U8DownloadError.fetchFailed("\(url.lastPathComponent): \(detail)")
+    }
+
+    private static func errnoHint(status: Int) -> String {
+        switch status {
+        case 401, 403, 439: return "（服务器拒绝访问，可能需要 Referer/Cookie）"
+        case 404: return "（资源不存在）"
+        case 429: return "（请求过于频繁）"
+        case 500...599: return "（服务器错误）"
+        default: return ""
+        }
     }
 
     // MARK: - 文件名

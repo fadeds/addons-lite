@@ -4,6 +4,7 @@ struct VideoListView: View {
     @EnvironmentObject private var appState: AppState
     @State private var showManualInput = false
     @State private var manualURL = ""
+    @State private var manualReferer = ""
 
     var body: some View {
         NavigationStack {
@@ -73,7 +74,7 @@ struct VideoListView: View {
                 .foregroundStyle(.secondary)
             Text("暂无待下载视频")
                 .font(.headline)
-            Text("在 Safari 中打开并播放视频，\n点击地址栏的扩展图标 →「在 App 打开」")
+            Text("在 Safari 中复制视频链接后点下方按钮导入；\nSafari 扩展仅正常签名安装时可用")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -106,6 +107,17 @@ struct VideoListView: View {
                 } footer: {
                     Text("支持 m3u8 / mp4 等 HTTP(S) 链接")
                 }
+
+                Section {
+                    TextField("https://example.com/page", text: $manualReferer)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Referer（可选）")
+                } footer: {
+                    Text("报 HTTP 403/439 时填写视频所在网页地址")
+                }
             }
             .navigationTitle("手动添加")
             .navigationBarTitleDisplayMode(.inline)
@@ -113,16 +125,25 @@ struct VideoListView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") {
                         manualURL = ""
+                        manualReferer = ""
                         showManualInput = false
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("添加") {
                         let trimmed = manualURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let referer = manualReferer.trimmingCharacters(in: .whitespacesAndNewlines)
                         if let url = URL(string: trimmed),
                            url.scheme?.hasPrefix("http") == true {
-                            appState.addPending(VideoInfo(url: trimmed, source: .manual))
+                            appState.addPending(
+                                VideoInfo(
+                                    url: trimmed,
+                                    referer: referer.isEmpty ? nil : referer,
+                                    source: .manual
+                                )
+                            )
                             manualURL = ""
+                            manualReferer = ""
                             showManualInput = false
                         } else {
                             appState.showToast("链接格式不正确")
