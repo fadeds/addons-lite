@@ -175,8 +175,7 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     private func updateDurations() {
-        let length = player.media.length
-        guard length.intValue > 0 else { return }
+        guard let length = player.media?.length, length.intValue > 0 else { return }
         durationText = length.stringValue
         durationSeconds = Double(length.intValue)
     }
