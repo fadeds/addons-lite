@@ -84,13 +84,8 @@ jobs:
 
       - name: 准备 IJK 本地框架
         run: |
-          set -e
           mkdir -p vendor/IJKMediaFramework
           if [ ! -d vendor/IJKMediaFramework/IJKMediaFramework.framework ]; then
-            if ! git rev-parse --verify --quiet refs/tags/local >/dev/null; then
-              git fetch --depth=1 origin refs/tags/local:refs/tags/local
-            fi
-            git show local:vendor/IJKMediaFramework.zip > vendor/IJKMediaFramework/IJKMediaFramework.zip
             unzip -q -o vendor/IJKMediaFramework/IJKMediaFramework.zip -d vendor/IJKMediaFramework
           fi
           ls -lh vendor/IJKMediaFramework/IJKMediaFramework.framework/IJKMediaFramework
