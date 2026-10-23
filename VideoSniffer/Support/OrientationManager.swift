@@ -5,7 +5,6 @@ final class OrientationManager {
     static let shared = OrientationManager()
 
     var allowLandscape = false
-    var userDidOverrideInitialOrientation = false
 
     private init() {}
 }

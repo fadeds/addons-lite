@@ -20,24 +20,30 @@ struct PlayerView: View {
     var body: some View {
         ZStack {
             GeometryReader { geo in
+                let landscape = geo.size.width > geo.size.height
+                let windowWidth = landscape
+                    ? geo.size.width
+                    : min(geo.size.width - 48, 480)
+                let windowHeight = landscape
+                    ? geo.size.height
+                    : windowWidth * 9 / 16
                 ZStack {
                     Color.black
                     VLCVideoSurface(player: model.player)
                         .allowsHitTesting(false)
+                        .frame(width: windowWidth, height: windowHeight)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: landscape ? 0 : 14,
+                                style: .continuous
+                            )
+                        )
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
-                .onAppear {
-                    isLandscape = geo.size.width > geo.size.height
-                    if isLandscape {
-                        model.startPlayback()
-                    }
-                }
+                .onAppear { isLandscape = landscape }
                 .onChange(of: geo.size) { size in
                     isLandscape = size.width > size.height
-                    if isLandscape {
-                        model.startPlayback()
-                    }
                 }
             }
             .ignoresSafeArea()
@@ -185,18 +191,7 @@ struct PlayerView: View {
         UIApplication.shared.isIdleTimerDisabled = true
         isLandscape = activeWindowScene?.interfaceOrientation.isLandscape ?? false
         OrientationManager.shared.allowLandscape = true
-        OrientationManager.shared.userDidOverrideInitialOrientation = false
-        requestOrientation(.landscapeRight)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard OrientationManager.shared.allowLandscape else { return }
-            if !OrientationManager.shared.userDidOverrideInitialOrientation {
-                requestOrientation(.landscapeRight)
-            }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            guard OrientationManager.shared.allowLandscape else { return }
-            model.startPlayback()
-        }
+        model.startPlayback()
     }
 
     private func stop() {
@@ -220,7 +215,6 @@ struct PlayerView: View {
 
     private func toggleOrientation() {
         guard let scene = activeWindowScene else { return }
-        OrientationManager.shared.userDidOverrideInitialOrientation = true
         let target: UIInterfaceOrientationMask = scene.interfaceOrientation.isLandscape
             ? .portrait
             : .landscapeRight
