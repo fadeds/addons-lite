@@ -175,7 +175,8 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     private func updateDurations() {
-        guard let length = player.media?.length, length.intValue > 0 else { return }
+        let length = player.media.length
+        guard length.intValue > 0 else { return }
         durationText = length.stringValue
         durationSeconds = Double(length.intValue)
     }
@@ -210,9 +211,7 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func mediaPlayerTimeChanged(_ aNotification: Notification) {
         guard !isSeeking else { return }
-        if let time = player.time {
-            timeText = time.stringValue
-        }
+        timeText = player.time.stringValue
         updateDurations()
         if durationSeconds > 0 {
             position = Double(player.position)
