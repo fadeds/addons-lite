@@ -98,14 +98,15 @@ jobs:
           STATUS=${PIPESTATUS[0]}
           if [ "$STATUS" -ne 0 ]; then
             echo "Pod 安装失败，提取错误："
-            ERRORS=$(grep -aE "error:|\[!\]|Unable to find" "$RUNNER_TEMP/pod.log" | head -n 10)
+            ERRORS=$(grep -aE "error:|\[!\]|Unable to find|failed|fatal" "$RUNNER_TEMP/pod.log" | head -n 40)
             if [ -z "$ERRORS" ]; then
-              ERRORS=$(tail -n 15 "$RUNNER_TEMP/pod.log")
+              ERRORS=$(tail -n 80 "$RUNNER_TEMP/pod.log")
             fi
-            printf '%s\n' "$ERRORS" | cut -c1-600 | while IFS= read -r line; do
+            printf '%s\n' "$ERRORS" | while IFS= read -r line; do
               echo "::error::$line"
             done
-            tail -n 40 "$RUNNER_TEMP/pod.log"
+            echo "---------- pod.log 全量日志 ----------"
+            cat "$RUNNER_TEMP/pod.log"
             exit "$STATUS"
           fi
 
