@@ -82,7 +82,15 @@ jobs:
             exit "$STATUS"
           fi
 
-      - name: 安装 Pods 依赖（MobileVLCKit）
+      - name: 缓存 CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: cocoapods-${{ runner.os }}-${{ hashFiles('Podfile') }}
+          restore-keys: |
+            cocoapods-${{ runner.os }}-
+
+      - name: 安装 Pods 依赖（IJKMediaFramework）
         run: |
           set +e
           set -o pipefail

@@ -3,9 +3,9 @@ platform :ios, '16.0'
 source 'https://cdn.cocoapods.org/'
 
 target 'VideoSniffer' do
-  use_frameworks!
+  use_frameworks! :linkage => :static
 
-  pod 'MobileVLCKit', '~> 3.6'
+  pod 'IJKMediaFramework', '0.1.5'
 end
 
 post_install do |installer|

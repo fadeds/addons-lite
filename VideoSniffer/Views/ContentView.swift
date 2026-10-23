@@ -5,48 +5,50 @@ struct ContentView: View {
     @EnvironmentObject private var downloadManager: DownloadManager
 
     var body: some View {
-        TabView(selection: $appState.selectedTab) {
-            VideoListView()
-                .tabItem {
-                    Label("待下载", systemImage: "link")
-                }
-                .tag(0)
+        ZStack(alignment: .top) {
+            TabView(selection: $appState.selectedTab) {
+                VideoListView()
+                    .tabItem {
+                        Label("待下载", systemImage: "link")
+                    }
+                    .tag(0)
 
-            DownloadListView()
-                .tabItem {
-                    Label("下载", systemImage: "arrow.down.circle")
-                }
-                .badge(downloadManager.activeCount)
-                .tag(1)
+                DownloadListView()
+                    .tabItem {
+                        Label("下载", systemImage: "arrow.down.circle")
+                    }
+                    .badge(downloadManager.activeCount)
+                    .tag(1)
 
-            FileListView()
-                .tabItem {
-                    Label("文件", systemImage: "folder")
-                }
-                .tag(2)
+                FileListView()
+                    .tabItem {
+                        Label("文件", systemImage: "folder")
+                    }
+                    .tag(2)
 
-            SettingsView()
-                .tabItem {
-                    Label("设置", systemImage: "gearshape")
-                }
-                .tag(3)
-        }
-        .overlay(alignment: .bottom) {
-            if let toast = appState.toast {
-                Text(toast)
-                    .font(.subheadline)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(.thinMaterial, in: Capsule())
-                    .shadow(radius: 4)
-                    .padding(.bottom, 72)
-                    .transition(.opacity)
+                SettingsView()
+                    .tabItem {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                    .tag(3)
             }
-        }
-        .overlay {
+            .overlay(alignment: .bottom) {
+                if let toast = appState.toast {
+                    Text(toast)
+                        .font(.subheadline)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(.thinMaterial, in: Capsule())
+                        .shadow(radius: 4)
+                        .padding(.bottom, 72)
+                        .transition(.opacity)
+                }
+            }
+
             if let url = appState.playingFileURL {
                 PlayerHost(url: url)
                     .id(url)
+                    .zIndex(1)
                     .ignoresSafeArea(edges: appState.playerExpanded ? .all : [])
             }
         }
@@ -74,28 +76,31 @@ private struct PlayerHost: View {
                 height: min(max(windowOffset.height, 0), maxOffsetY)
             )
 
-            PlayerView(
-                url: url,
-                windowOffset: Binding(
-                    get: { windowOffset },
-                    set: { newValue in
-                        windowOffset = CGSize(
-                            width: min(max(newValue.width, -maxOffsetX), maxOffsetX),
-                            height: min(max(newValue.height, 0), maxOffsetY)
-                        )
-                    }
+            ZStack(alignment: .top) {
+                PlayerView(
+                    url: url,
+                    windowOffset: Binding(
+                        get: { windowOffset },
+                        set: { newValue in
+                            windowOffset = CGSize(
+                                width: min(max(newValue.width, -maxOffsetX), maxOffsetX),
+                                height: min(max(newValue.height, 0), maxOffsetY)
+                            )
+                        }
+                    )
                 )
-            )
-            .frame(width: width, height: height)
-            .position(
-                x: expanded ? geo.size.width / 2 : geo.size.width / 2 + offset.width,
-                y: expanded ? geo.size.height / 2 : 8 + miniHeight / 2 + offset.height
-            )
-            .shadow(
-                color: expanded ? .clear : .black.opacity(0.35),
-                radius: expanded ? 0 : 12,
-                y: expanded ? 0 : 6
-            )
+                .frame(width: width, height: height)
+                .offset(
+                    x: expanded ? 0 : offset.width,
+                    y: expanded ? 0 : 8 + offset.height
+                )
+                .shadow(
+                    color: expanded ? .clear : .black.opacity(0.35),
+                    radius: expanded ? 0 : 12,
+                    y: expanded ? 0 : 6
+                )
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
             .animation(.spring(response: 0.34, dampingFraction: 0.88), value: expanded)
         }
         .onChange(of: appState.playerExpanded) { expanded in

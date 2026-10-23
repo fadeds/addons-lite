@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
-import MobileVLCKit
+import IJKMediaFramework
 
 struct PlayerView: View {
     let url: URL
@@ -9,7 +9,7 @@ struct PlayerView: View {
 
     @Binding private var windowOffset: CGSize
     @EnvironmentObject private var appState: AppState
-    @StateObject private var model: VLCPlayerModel
+    @StateObject private var model: IJKPlayerModel
 
     @State private var showControls = true
     @State private var scrubPosition: Double?
@@ -44,7 +44,7 @@ struct PlayerView: View {
         self.url = url
         self.referer = referer
         _windowOffset = windowOffset
-        _model = StateObject(wrappedValue: VLCPlayerModel(url: url, referer: referer))
+        _model = StateObject(wrappedValue: IJKPlayerModel(url: url, referer: referer))
     }
 
     var body: some View {
@@ -58,7 +58,7 @@ struct PlayerView: View {
             ZStack(alignment: .top) {
                 Color.black
 
-                VLCVideoSurface(player: model.player)
+                IJKVideoSurface(player: model.player)
                     .allowsHitTesting(false)
                     .frame(width: geo.size.width, height: videoHeight)
                     .frame(maxHeight: .infinity, alignment: .bottom)
@@ -122,6 +122,7 @@ struct PlayerView: View {
                 if !expanded {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+                        .allowsHitTesting(false)
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: showControls)
@@ -314,19 +315,19 @@ struct PlayerView: View {
 
     private var speedMenu: some View {
         Menu {
-            ForEach(VLCPlayerModel.rates, id: \.self) { rate in
+            ForEach(IJKPlayerModel.rates, id: \.self) { rate in
                 Button {
                     model.setRate(rate)
                 } label: {
                     if abs(model.rate - rate) < 0.01 {
-                        Label(VLCPlayerModel.rateText(rate), systemImage: "checkmark")
+                        Label(IJKPlayerModel.rateText(rate), systemImage: "checkmark")
                     } else {
-                        Text(VLCPlayerModel.rateText(rate))
+                        Text(IJKPlayerModel.rateText(rate))
                     }
                 }
             }
         } label: {
-            Text(VLCPlayerModel.rateText(model.rate))
+            Text(IJKPlayerModel.rateText(model.rate))
                 .font(.footnote.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(minWidth: 44)
@@ -376,7 +377,7 @@ struct PlayerView: View {
                     showHUD(
                         PlayerHUD(
                             icon: delta >= 0 ? "goforward" : "gobackward",
-                            text: "\(Self.formatTime(seconds)) / \(Self.formatTime(model.durationSeconds))",
+                            text: "\(IJKPlayerModel.formatTime(seconds)) / \(IJKPlayerModel.formatTime(model.durationSeconds))",
                             progress: target
                         )
                     )
@@ -527,42 +528,46 @@ struct PlayerView: View {
 
     private var displayTime: String {
         if let scrubPosition, model.durationSeconds > 0 {
-            return Self.formatTime(scrubPosition * model.durationSeconds)
+            return IJKPlayerModel.formatTime(scrubPosition * model.durationSeconds)
         }
         return model.timeText
     }
-
-    private static func formatTime(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let secs = total % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        }
-        return String(format: "%02d:%02d", minutes, secs)
-    }
 }
 
-private struct VLCVideoSurface: UIViewRepresentable {
-    let player: VLCMediaPlayer
+private struct IJKVideoSurface: UIViewRepresentable {
+    let player: IJKFFMoviePlayerController
 
     func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .black
-        view.isUserInteractionEnabled = false
-        player.drawable = view
-        return view
+        let container = IJKPlayerContainerView()
+        container.backgroundColor = .black
+        container.isUserInteractionEnabled = false
+
+        let surface: UIView = player.view
+        surface.backgroundColor = .black
+        surface.isUserInteractionEnabled = false
+        surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        surface.frame = container.bounds
+        container.addSubview(surface)
+        return container
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        if (player.drawable as? UIView) !== uiView {
-            player.drawable = uiView
+        let surface: UIView = player.view
+        if surface.superview !== uiView {
+            uiView.addSubview(surface)
         }
+        surface.frame = uiView.bounds
     }
 }
 
-final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
+private final class IJKPlayerContainerView: UIView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        subviews.first?.frame = bounds
+    }
+}
+
+final class IJKPlayerModel: NSObject, ObservableObject {
     static let rates: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     static func rateText(_ rate: Double) -> String {
@@ -576,7 +581,19 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         return text + "x"
     }
 
-    let player = VLCMediaPlayer()
+    static func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "00:00" }
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+
+    let player: IJKFFMoviePlayerController!
 
     @Published private(set) var isPlaying = false
     @Published private(set) var isBuffering = true
@@ -587,58 +604,117 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published private(set) var rate: Double = 1.0
     @Published private(set) var errorMessage: String?
 
-    private var isSeeking = false
-    private var didConfigureAudio = false
+    private var observers: [NSObjectProtocol] = []
+    private var timeTimer: Timer?
     private var didStartPlayback = false
+    private var didConfigureAudio = false
     private var isStopped = false
+    private var pendingPlay = false
+    private var isSeeking = false
 
     init(url: URL, referer: String?) {
+        let options: IJKFFOptions = IJKFFOptions.optionsByDefault()
+        options.setPlayerOptionIntValue(1, forKey: "videotoolbox")
+        options.setPlayerOptionIntValue(3840, forKey: "videotoolbox-max-frame-width")
+        options.setPlayerOptionIntValue(1, forKey: "enable-accurate-seek")
+        options.setPlayerOptionIntValue(1, forKey: "framedrop")
+
+        player = IJKFFMoviePlayerController(contentURL: url, withOptions: options)
         super.init()
 
-        player.delegate = self
+        _ = referer
 
-        let media = VLCMedia(url: url)
-        var options: [AnyHashable: Any] = [
-            ":network-caching": 1500
-        ]
-        if let referer, !referer.isEmpty {
-            options[":http-referrer"] = referer
-        }
-        media.addOptions(options)
-        player.media = media
+        player.scalingMode = .aspectFit
+        player.shouldAutoplay = false
+        player.setPauseInBackground(false)
+        player.view.backgroundColor = .black
+        player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+
+        installObservers()
     }
 
     func startPlayback() {
         guard !didStartPlayback, !isStopped else { return }
         didStartPlayback = true
-        player.play()
+        pendingPlay = true
+        player.prepareToPlay()
+        startTimer()
     }
 
     func togglePlay() {
-        if player.isPlaying {
+        if player.isPlaying() {
             player.pause()
+            isPlaying = false
         } else {
+            play()
+        }
+    }
+
+    func play() {
+        guard !isStopped else { return }
+        configureAudioIfNeeded()
+        if player.isPreparedToPlay {
             player.play()
+            isPlaying = true
+        } else {
+            pendingPlay = true
+            if !didStartPlayback {
+                didStartPlayback = true
+                player.prepareToPlay()
+                startTimer()
+            }
         }
     }
 
     func seek(to value: Double) {
-        guard durationSeconds > 0 else { return }
+        guard durationSeconds > 0, !isStopped else { return }
+        let clamped = min(max(value, 0), 1)
+        let target = clamped * durationSeconds
         isSeeking = true
-        player.position = Float(min(max(value, 0), 1))
-        isSeeking = false
+        player.currentPlaybackTime = target
+        position = clamped
+        timeText = Self.formatTime(target)
+        if isPlaying {
+            isBuffering = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.isSeeking = false
+        }
     }
 
     func setRate(_ value: Double) {
         rate = value
-        player.rate = Float(value)
+        player.playbackRate = Float(value)
     }
 
     func stop() {
+        guard !isStopped else { return }
         isStopped = true
+        timeTimer?.invalidate()
+        timeTimer = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
         player.stop()
-        player.drawable = nil
-        player.delegate = nil
+        player.shutdown()
+        isPlaying = false
+        isBuffering = false
+    }
+
+    deinit {
+        timeTimer?.invalidate()
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        if !isStopped {
+            player.shutdown()
+        }
+    }
+
+    private func startTimer() {
+        guard timeTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        timeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func configureAudioIfNeeded() {
@@ -649,49 +725,125 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         try? session.setActive(true)
     }
 
-    private func updateDurations() {
-        guard let length = player.media?.length, length.intValue > 0 else { return }
-        durationText = length.stringValue
-        durationSeconds = Double(length.intValue)
+    private func installObservers() {
+        let center = NotificationCenter.default
+        let prepared = Notification.Name.IJKMPMediaPlaybackIsPreparedToPlayDidChange
+        let stateChanged = Notification.Name.IJKMPMoviePlayerPlaybackStateDidChange
+        let loadChanged = Notification.Name.IJKMPMoviePlayerLoadStateDidChange
+        let finished = Notification.Name.IJKMPMoviePlayerPlaybackDidFinish
+
+        observers.append(center.addObserver(forName: prepared, object: player, queue: .main) { [weak self] _ in
+            self?.handlePrepared()
+        })
+        observers.append(center.addObserver(forName: stateChanged, object: player, queue: .main) { [weak self] _ in
+            self?.handlePlaybackState()
+        })
+        observers.append(center.addObserver(forName: loadChanged, object: player, queue: .main) { [weak self] _ in
+            self?.handleLoadState()
+        })
+        observers.append(center.addObserver(forName: finished, object: player, queue: .main) { [weak self] notification in
+            self?.handleFinish(notification)
+        })
     }
 
-    // MARK: - VLCMediaPlayerDelegate
-
-    func mediaPlayerStateChanged(_ aNotification: Notification) {
-        switch player.state {
-        case .opening, .buffering:
-            isBuffering = true
-        case .playing:
+    private func handlePrepared() {
+        guard !isStopped else { return }
+        updateDuration()
+        if pendingPlay {
+            pendingPlay = false
             configureAudioIfNeeded()
+            player.play()
+        }
+    }
+
+    private func handlePlaybackState() {
+        guard !isStopped else { return }
+        switch player.playbackState.rawValue {
+        case 0:
+            isPlaying = false
             isBuffering = false
+        case 1:
+            configureAudioIfNeeded()
             isPlaying = true
+            isBuffering = false
             errorMessage = nil
-            updateDurations()
-            if abs(Double(player.rate) - rate) > 0.01 {
-                player.rate = Float(rate)
+            updateDuration()
+            if abs(Double(player.playbackRate) - rate) > 0.01 {
+                player.playbackRate = Float(rate)
             }
-        case .paused:
-            isBuffering = false
+        case 2:
             isPlaying = false
-            updateDurations()
-        case .ended:
             isBuffering = false
+            updateDuration()
+        case 3:
             isPlaying = false
-        case .error:
-            isBuffering = false
-            isPlaying = false
-            errorMessage = "播放失败：格式不支持或网络不可达"
+            isBuffering = true
+        case 4, 5:
+            isBuffering = true
         default:
             break
         }
     }
 
-    func mediaPlayerTimeChanged(_ aNotification: Notification) {
-        guard !isSeeking else { return }
-        timeText = player.time.stringValue
-        updateDurations()
-        if durationSeconds > 0 {
-            position = Double(player.position)
+    private func handleLoadState() {
+        guard !isStopped else { return }
+        let load = player.loadState.rawValue
+        if (load & 4) != 0 {
+            isBuffering = true
+        } else if (load & 3) != 0 {
+            if player.isPlaying() {
+                isBuffering = false
+            }
         }
+    }
+
+    private func handleFinish(_ notification: Notification) {
+        guard !isStopped else { return }
+        let info = notification.userInfo?[IJKMPMoviePlayerPlaybackDidFinishReasonUserInfoKey]
+        let raw: Int
+        if let value = info as? NSNumber {
+            raw = value.intValue
+        } else if let value = info as? Int {
+            raw = value
+        } else {
+            raw = -1
+        }
+        isBuffering = false
+        isPlaying = false
+        if raw == 1 {
+            errorMessage = "播放失败：格式不支持或文件损坏"
+        } else if raw == 0 {
+            updateDuration()
+            position = 1
+            timeText = durationText
+        }
+    }
+
+    private func tick() {
+        guard !isStopped, !isSeeking else { return }
+        let playing = player.isPlaying()
+        if playing != isPlaying {
+            isPlaying = playing
+        }
+        if playing, player.loadState.rawValue & 4 == 0 {
+            isBuffering = false
+        }
+
+        updateDuration()
+
+        let current = player.currentPlaybackTime
+        guard current.isFinite else { return }
+        let clamped = max(0, current)
+        timeText = Self.formatTime(clamped)
+        if durationSeconds > 0 {
+            position = min(max(clamped / durationSeconds, 0), 1)
+        }
+    }
+
+    private func updateDuration() {
+        let duration = player.duration
+        guard duration.isFinite, duration > 0 else { return }
+        durationSeconds = duration
+        durationText = Self.formatTime(duration)
     }
 }
