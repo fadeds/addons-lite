@@ -6,25 +6,33 @@ import MobileVLCKit
 struct PlayerView: View {
     let url: URL
     var referer: String?
+    var onLandscape: (() -> Void)?
+    var onPortrait: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: VLCPlayerModel
     @State private var showControls = true
     @State private var isLandscape = false
 
-    init(url: URL, referer: String? = nil) {
+    init(
+        url: URL,
+        referer: String? = nil,
+        onLandscape: (() -> Void)? = nil,
+        onPortrait: (() -> Void)? = nil
+    ) {
         self.url = url
         self.referer = referer
+        self.onLandscape = onLandscape
+        self.onPortrait = onPortrait
         _model = StateObject(wrappedValue: VLCPlayerModel(url: url, referer: referer))
     }
 
     var body: some View {
         ZStack {
             GeometryReader { geo in
-                let landscape = geo.size.width > geo.size.height
-                let windowWidth = landscape
+                let windowWidth = isLandscape
                     ? geo.size.width
-                    : min(geo.size.width - 48, 480)
-                let windowHeight = landscape
+                    : max(geo.size.width - 32, 160)
+                let windowHeight = isLandscape
                     ? geo.size.height
                     : windowWidth * 9 / 16
                 ZStack {
@@ -32,18 +40,14 @@ struct PlayerView: View {
                     VLCVideoSurface(player: model.player)
                         .allowsHitTesting(false)
                         .frame(width: windowWidth, height: windowHeight)
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: landscape ? 0 : 14,
-                                style: .continuous
-                            )
-                        )
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
-                .onAppear { isLandscape = landscape }
+                .onAppear {
+                    updateOrientation(fallback: geo.size)
+                }
                 .onChange(of: geo.size) { size in
-                    isLandscape = size.width > size.height
+                    updateOrientation(fallback: size)
                 }
             }
             .ignoresSafeArea()
@@ -80,8 +84,8 @@ struct PlayerView: View {
             }
         }
         .background(Color.black)
-        .statusBarHidden(true)
-        .persistentSystemOverlays(.hidden)
+        .statusBarHidden(isLandscape)
+        .persistentSystemOverlays(isLandscape ? .hidden : .automatic)
         .animation(.easeInOut(duration: 0.2), value: showControls)
         .onAppear(perform: start)
         .onDisappear(perform: stop)
@@ -90,35 +94,43 @@ struct PlayerView: View {
     // MARK: - 控件
 
     private var topBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .bold))
-                    .frame(width: 34, height: 34)
-                    .background(.black.opacity(0.45), in: Circle())
+        VStack(spacing: 6) {
+            if !isLandscape {
+                Capsule()
+                    .fill(.white.opacity(0.3))
+                    .frame(width: 36, height: 5)
             }
 
-            Text(displayName)
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.9))
-                .lineLimit(1)
+            HStack(spacing: 12) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(width: 34, height: 34)
+                        .background(.black.opacity(0.45), in: Circle())
+                }
 
-            Spacer(minLength: 8)
+                Text(displayName)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
 
-            Button {
-                toggleOrientation()
-            } label: {
-                Text(isLandscape ? "竖屏" : "横屏")
-                    .font(.footnote.weight(.semibold))
-                    .frame(minWidth: 44)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 10)
-                    .background(.black.opacity(0.45), in: Capsule())
+                Spacer(minLength: 8)
+
+                Button {
+                    toggleOrientation()
+                } label: {
+                    Text(isLandscape ? "竖屏" : "横屏")
+                        .font(.footnote.weight(.semibold))
+                        .frame(minWidth: 44)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 10)
+                        .background(.black.opacity(0.45), in: Capsule())
+                }
+
+                speedMenu
             }
-
-            speedMenu
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 16)
@@ -189,9 +201,21 @@ struct PlayerView: View {
 
     private func start() {
         UIApplication.shared.isIdleTimerDisabled = true
-        isLandscape = activeWindowScene?.interfaceOrientation.isLandscape ?? false
         OrientationManager.shared.allowLandscape = true
         model.startPlayback()
+    }
+
+    private func updateOrientation(fallback size: CGSize) {
+        let landscape = activeWindowScene?.interfaceOrientation.isLandscape
+            ?? (size.width > size.height)
+        if isLandscape != landscape {
+            isLandscape = landscape
+        }
+        if landscape {
+            onLandscape?()
+        } else {
+            onPortrait?()
+        }
     }
 
     private func stop() {

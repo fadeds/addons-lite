@@ -10,6 +10,7 @@ struct FileListView: View {
     @EnvironmentObject private var manager: DownloadManager
     @State private var files: [FileInfo] = []
     @State private var playing: IdentifiableURL?
+    @State private var playerExpanded = false
     @State private var alertMessage: String?
     @State private var showPhotoAlert = false
 
@@ -42,8 +43,24 @@ struct FileListView: View {
             }
             .onAppear { reload() }
             .refreshable { reload() }
-            .fullScreenCover(item: $playing) { item in
-                PlayerView(url: item.url)
+            .sheet(item: $playing, onDismiss: {
+                playerExpanded = false
+            }) { item in
+                PlayerView(
+                    url: item.url,
+                    onLandscape: { playerExpanded = true },
+                    onPortrait: { playerExpanded = false }
+                )
+                .presentationDetents(
+                    playerExpanded
+                        ? Set<PresentationDetent>([.large])
+                        : Set<PresentationDetent>([.medium]),
+                    selection: Binding(
+                        get: { playerExpanded ? .large : .medium },
+                        set: { playerExpanded = ($0 == .large) }
+                    )
+                )
+                .presentationDragIndicator(.hidden)
             }
             .alert("提示", isPresented: $showPhotoAlert) {
                 Button("好", role: .cancel) {}
@@ -60,11 +77,11 @@ struct FileListView: View {
                     FileRow(file: file)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            playing = IdentifiableURL(url: file.url)
+                            play(file)
                         }
                         .contextMenu {
                             Button {
-                                playing = IdentifiableURL(url: file.url)
+                                play(file)
                             } label: {
                                 Label("播放", systemImage: "play")
                             }
@@ -108,6 +125,11 @@ struct FileListView: View {
     }
 
     // MARK: - 操作
+
+    private func play(_ file: FileInfo) {
+        playerExpanded = false
+        playing = IdentifiableURL(url: file.url)
+    }
 
     private func reload() {
         let fm = FileManager.default
