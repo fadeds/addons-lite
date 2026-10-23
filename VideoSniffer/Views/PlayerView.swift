@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import AVFoundation
 import MobileVLCKit
 
@@ -7,6 +8,8 @@ struct PlayerView: View {
     var referer: String?
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: VLCPlayerModel
+    @State private var showControls = true
+    @State private var fillScreen = false
 
     init(url: URL, referer: String? = nil) {
         self.url = url
@@ -15,55 +18,123 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-
-                VLCVideoSurface(player: model.player)
-                    .ignoresSafeArea()
-
-                if let error = model.errorMessage {
-                    VStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                        Text(error)
-                            .font(.subheadline)
-                            .multilineTextAlignment(.center)
-                    }
-                    .foregroundStyle(.white)
-                    .padding(24)
-                } else if model.isBuffering {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                        .scaleEffect(1.3)
+        ZStack {
+            GeometryReader { geo in
+                ZStack {
+                    Color.black
+                    VLCVideoSurface(player: model.player)
+                        .allowsHitTesting(false)
+                        .scaleEffect(fillScreen ? fillScale(in: geo.size) : 1)
                 }
-
-                VStack {
-                    Spacer()
-                    controlBar
-                }
+                .frame(width: geo.size.width, height: geo.size.height)
+                .clipped()
             }
-            .navigationTitle(url.lastPathComponent)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("完成") {
-                        dismiss()
-                    }
-                    .foregroundStyle(.white)
+            .ignoresSafeArea()
+
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture { toggleControls() }
+
+            if let error = model.errorMessage {
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                    Text(error)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
                 }
+                .foregroundStyle(.white)
+                .padding(24)
+            } else if model.isBuffering {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                    .scaleEffect(1.4)
             }
-            .toolbarBackground(.black.opacity(0.7), for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+
+            if showControls {
+                VStack(spacing: 0) {
+                    topBar
+                    Spacer(minLength: 0)
+                    bottomBar
+                }
+                .transition(.opacity)
+            }
         }
-        .onDisappear {
-            model.stop()
+        .background(Color.black)
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
+        .animation(.easeInOut(duration: 0.2), value: showControls)
+        .animation(.easeInOut(duration: 0.25), value: fillScreen)
+        .onAppear(perform: start)
+        .onDisappear(perform: stop)
+    }
+
+    // MARK: - 控件
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(width: 34, height: 34)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+
+            Text(displayName)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button {
+                fillScreen.toggle()
+            } label: {
+                Image(systemName: fillScreen
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 34, height: 34)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+
+            speedMenu
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    private var speedMenu: some View {
+        Menu {
+            ForEach(VLCPlayerModel.rates, id: \.self) { rate in
+                Button {
+                    model.setRate(rate)
+                } label: {
+                    if abs(model.rate - rate) < 0.01 {
+                        Label(VLCPlayerModel.rateText(rate), systemImage: "checkmark")
+                    } else {
+                        Text(VLCPlayerModel.rateText(rate))
+                    }
+                }
+            }
+        } label: {
+            Text(VLCPlayerModel.rateText(model.rate))
+                .font(.footnote.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.white)
+                .frame(minWidth: 44)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(.black.opacity(0.45), in: Capsule())
         }
     }
 
-    private var controlBar: some View {
-        VStack(spacing: 8) {
+    private var bottomBar: some View {
+        VStack(spacing: 6) {
             Slider(
                 value: Binding(
                     get: { model.position },
@@ -74,25 +145,73 @@ struct PlayerView: View {
             .tint(.white)
             .disabled(model.durationSeconds <= 0)
 
-            HStack {
+            HStack(spacing: 14) {
                 Button {
                     model.togglePlay()
                 } label: {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title2)
-                        .frame(width: 44, height: 32)
+                        .frame(width: 40, height: 34)
                 }
+
+                Text(model.timeText)
+                    .font(.caption.monospacedDigit())
 
                 Spacer()
 
-                Text("\(model.timeText) / \(model.durationText)")
+                Text(model.durationText)
                     .font(.caption.monospacedDigit())
             }
             .foregroundStyle(.white)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(.black.opacity(0.55))
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    // MARK: - 生命周期
+
+    private func start() {
+        UIApplication.shared.isIdleTimerDisabled = true
+        OrientationManager.shared.allowLandscape = true
+        requestOrientation(.landscapeRight)
+    }
+
+    private func stop() {
+        UIApplication.shared.isIdleTimerDisabled = false
+        OrientationManager.shared.allowLandscape = false
+        requestOrientation(.portrait)
+        model.stop()
+    }
+
+    private func toggleControls() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showControls.toggle()
+        }
+    }
+
+    private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first
+        else { return }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
+    }
+
+    private func fillScale(in container: CGSize) -> CGFloat {
+        let size = model.videoSize
+        guard size.width > 0, size.height > 0,
+              container.width > 0, container.height > 0 else { return 1 }
+        let widthRatio = container.width / size.width
+        let heightRatio = container.height / size.height
+        let fit = min(widthRatio, heightRatio)
+        guard fit > 0 else { return 1 }
+        return max(widthRatio, heightRatio) / fit
+    }
+
+    private var displayName: String {
+        let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        return name.isEmpty ? "播放" : name
     }
 }
 
@@ -115,6 +234,19 @@ private struct VLCVideoSurface: UIViewRepresentable {
 }
 
 final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
+    static let rates: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+
+    static func rateText(_ rate: Double) -> String {
+        var text = String(format: "%.2f", rate)
+        while text.contains("."), text.hasSuffix("0") {
+            text.removeLast()
+        }
+        if text.hasSuffix(".") {
+            text.removeLast()
+        }
+        return text + "x"
+    }
+
     let player = VLCMediaPlayer()
 
     @Published private(set) var isPlaying = false
@@ -123,6 +255,8 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published private(set) var timeText = "00:00"
     @Published private(set) var durationText = "--:--"
     @Published private(set) var durationSeconds: Double = 0
+    @Published private(set) var videoSize: CGSize = .zero
+    @Published private(set) var rate: Double = 1.0
     @Published private(set) var errorMessage: String?
 
     private var isSeeking = false
@@ -160,6 +294,11 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         isSeeking = false
     }
 
+    func setRate(_ value: Double) {
+        rate = value
+        player.rate = Float(value)
+    }
+
     func stop() {
         player.stop()
         player.drawable = nil
@@ -180,6 +319,14 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         durationSeconds = Double(length.intValue)
     }
 
+    private func refreshVideoSize() {
+        let size = player.videoSize
+        guard size.width > 0, size.height > 0 else { return }
+        if size != videoSize {
+            videoSize = size
+        }
+    }
+
     // MARK: - VLCMediaPlayerDelegate
 
     func mediaPlayerStateChanged(_ aNotification: Notification) {
@@ -192,6 +339,10 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             isPlaying = true
             errorMessage = nil
             updateDurations()
+            refreshVideoSize()
+            if abs(Double(player.rate) - rate) > 0.01 {
+                player.rate = Float(rate)
+            }
         case .paused:
             isBuffering = false
             isPlaying = false
@@ -212,6 +363,7 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         guard !isSeeking else { return }
         timeText = player.time.stringValue
         updateDurations()
+        refreshVideoSize()
         if durationSeconds > 0 {
             position = Double(player.position)
         }

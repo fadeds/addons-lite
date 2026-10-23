@@ -42,7 +42,7 @@ struct FileListView: View {
             }
             .onAppear { reload() }
             .refreshable { reload() }
-            .sheet(item: $playing) { item in
+            .fullScreenCover(item: $playing) { item in
                 PlayerView(url: item.url)
             }
             .alert("提示", isPresented: $showPhotoAlert) {
