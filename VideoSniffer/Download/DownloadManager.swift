@@ -1,26 +1,6 @@
 import Foundation
 import UIKit
 
-/// 跨隔离域传递后台 URLSession 完成回调
-final class BackgroundCompletionBox: @unchecked Sendable {    static let shared = BackgroundCompletionBox()
-
-    private let lock = NSLock()
-    private var _handler: (() -> Void)?
-
-    var handler: (() -> Void)? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _handler
-        }
-        set {
-            lock.lock()
-            _handler = newValue
-            lock.unlock()
-        }
-    }
-}
-
 enum DownloadOutcome {
     case success(String)
     case failure(String)
@@ -50,19 +30,20 @@ final class DownloadResultBox: @unchecked Sendable {
 final class DownloadManager: NSObject, ObservableObject {
     static let shared = DownloadManager()
     static let tasksFile = "download_tasks.json"
-    static let backgroundIdentifier = "com.videosniffer.app.background-downloads"
 
     @Published private(set) var tasks: [DownloadTaskRecord] = []
 
     private var hlsTasks: [String: Task<Void, Never>] = [:]
+    private var directTasks: [String: URLSessionDownloadTask] = [:]
     private var lastPersist = Date.distantPast
 
-    private lazy var backgroundSession: URLSession = {
-        let config = URLSessionConfiguration.background(
-            withIdentifier: DownloadManager.backgroundIdentifier
-        )
-        config.sessionSendsLaunchEvents = true
-        config.isDiscretionary = false
+    /// 直链下载使用前台会话：临时文件位于 App 沙盒内，
+    /// 避免 TrollStore/侧载环境下后台会话临时文件（nsurlsessiond）无访问权限的问题
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = true
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 60 * 60 * 6
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
@@ -71,7 +52,7 @@ final class DownloadManager: NSObject, ObservableObject {
         tasks = Storage.load([DownloadTaskRecord].self, from: DownloadManager.tasksFile) ?? []
         restoreInterruptedTasks()
         pruneMissingFiles()
-        _ = backgroundSession
+        _ = session
     }
 
     var activeCount: Int {
@@ -116,15 +97,11 @@ final class DownloadManager: NSObject, ObservableObject {
                     record.finishedAt = .now
                 }
             } else {
-                backgroundSession.getAllTasks { [weak self] sessionTasks in
-                    let download = sessionTasks.first(where: { $0.taskDescription == id })
-                    Task { @MainActor [weak self] in
-                        if let download {
-                            download.cancel()
-                        } else {
-                            self?.markCancelledIfActive(id: id)
-                        }
-                    }
+                if let download = directTasks[id] {
+                    directTasks[id] = nil
+                    download.cancel()
+                } else {
+                    markCancelledIfActive(id: id)
                 }
             }
         case .remuxing:
@@ -174,12 +151,11 @@ final class DownloadManager: NSObject, ObservableObject {
     private func restoreInterruptedTasks() {
         var changed = false
         for index in tasks.indices where tasks[index].isActive {
-            // HLS 依赖前台流水线，进程重启即中断；直接下载交给后台会话自行恢复
-            if tasks[index].video.isHLS {
-                tasks[index].state = .failed
-                tasks[index].errorMessage = "下载中断，请点击重试"
-                changed = true
-            }
+            // 前台会话/HLS 流水线都不跨进程存活，重启后一律视为中断
+            tasks[index].state = .failed
+            tasks[index].errorMessage = "下载中断，请点击重试"
+            tasks[index].finishedAt = .now
+            changed = true
         }
         if changed { persist() }
     }
@@ -230,8 +206,9 @@ final class DownloadManager: NSObject, ObservableObject {
             if let referer = video.referer {
                 request.setValue(referer, forHTTPHeaderField: "Referer")
             }
-            let download = backgroundSession.downloadTask(with: request)
+            let download = session.downloadTask(with: request)
             download.taskDescription = id
+            directTasks[id] = download
             download.resume()
         }
     }
@@ -383,6 +360,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             let stored = DownloadResultBox.shared.take(id)
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.directTasks[id] = nil
                 // 已落盘但任务报错：删除文件，避免残留
                 if case .some(.success(let name)) = stored {
                     try? FileManager.default.removeItem(
@@ -408,6 +386,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
         // 无错误：以 didFinishDownloadingTo 同步记录的落盘结果为准
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.directTasks[id] = nil
             let result = DownloadResultBox.shared.take(id)
             guard let index = self.tasks.firstIndex(where: { $0.id == id }) else {
                 // 记录已被删除：清理刚落地的文件，避免孤儿文件残留
@@ -443,16 +422,6 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 }
             }
             self.persist()
-        }
-    }
-
-    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        let handler = BackgroundCompletionBox.shared.handler
-        BackgroundCompletionBox.shared.handler = nil
-        if let handler {
-            DispatchQueue.main.async {
-                handler()
-            }
         }
     }
 }
