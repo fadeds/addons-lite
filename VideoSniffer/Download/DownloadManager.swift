@@ -2,8 +2,7 @@ import Foundation
 import UIKit
 
 /// 跨隔离域传递后台 URLSession 完成回调
-final class BackgroundCompletionBox: @unchecked Sendable {
-    static let shared = BackgroundCompletionBox()
+final class BackgroundCompletionBox: @unchecked Sendable {    static let shared = BackgroundCompletionBox()
 
     private let lock = NSLock()
     private var _handler: (() -> Void)?
@@ -19,6 +18,26 @@ final class BackgroundCompletionBox: @unchecked Sendable {
             _handler = newValue
             lock.unlock()
         }
+    }
+}
+
+/// 在 didFinishDownloadingTo 与 didCompleteWithError 之间同步落盘结果，避免并发任务乱序
+final class DownloadResultBox: @unchecked Sendable {
+    static let shared = DownloadResultBox()
+
+    private let lock = NSLock()
+    private var results: [String: Result<String, String>] = [:]
+
+    func store(_ result: Result<String, String>, for id: String) {
+        lock.lock()
+        results[id] = result
+        lock.unlock()
+    }
+
+    func take(_ id: String) -> Result<String, String>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return results.removeValue(forKey: id)
     }
 }
 
@@ -304,56 +323,26 @@ extension DownloadManager: URLSessionDownloadDelegate {
 
         if let http = downloadTask.response as? HTTPURLResponse,
            !(200..<300).contains(http.statusCode) {
-            let status = http.statusCode
-            Task { @MainActor [weak self] in
-                self?.set(id: id) { record in
-                    record.state = .failed
-                    record.errorMessage = "HTTP \(status)（服务器拒绝访问，可能需要 Referer/Cookie）"
-                    record.finishedAt = .now
-                }
-            }
+            DownloadResultBox.shared.store(
+                .failure("HTTP \(http.statusCode)（服务器拒绝访问，可能需要 Referer/Cookie）"),
+                for: id
+            )
             return
         }
 
-        let suggested = downloadTask.response?.suggestedFilename
-        var moveError: Error?
-        var finalName: String?
-
         do {
+            let suggested = downloadTask.response?.suggestedFilename
             let rawName = suggested ?? "video_\(Int(Date().timeIntervalSince1970)).mp4"
             let destination = Storage.uniqueDestination(
                 fileName: Storage.sanitizeFileName(rawName)
             )
             try FileManager.default.moveItem(at: location, to: destination)
-            finalName = destination.lastPathComponent
+            DownloadResultBox.shared.store(.success(destination.lastPathComponent), for: id)
         } catch {
-            moveError = error
-        }
-
-        let name = finalName
-        let failure = moveError
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard self.tasks.contains(where: { $0.id == id }) else {
-                // 记录已被删除：清理刚落地的文件，避免孤儿文件残留
-                if let name {
-                    try? FileManager.default.removeItem(
-                        at: Storage.downloadsURL.appendingPathComponent(name)
-                    )
-                }
-                return
-            }
-            if let failure {
-                self.set(id: id) { record in
-                    record.state = .failed
-                    record.errorMessage = "保存文件失败：\(failure.localizedDescription)"
-                    record.finishedAt = .now
-                }
-            } else {
-                self.set(id: id) { record in
-                    record.fileName = name
-                }
-            }
+            DownloadResultBox.shared.store(
+                .failure("保存文件失败：\(error.localizedDescription)"),
+                for: id
+            )
         }
     }
 
@@ -386,8 +375,15 @@ extension DownloadManager: URLSessionDownloadDelegate {
         guard let id = task.taskDescription else { return }
 
         if let error = error as NSError? {
+            let stored = DownloadResultBox.shared.take(id)
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // 已落盘但任务报错：删除文件，避免残留
+                if case .success(let name) = stored {
+                    try? FileManager.default.removeItem(
+                        at: Storage.downloadsURL.appendingPathComponent(name)
+                    )
+                }
                 if error.code == NSURLErrorCancelled {
                     self.set(id: id) { record in
                         record.state = .cancelled
@@ -404,21 +400,42 @@ extension DownloadManager: URLSessionDownloadDelegate {
             return
         }
 
-        // 无错误：确认文件已落地
+        // 无错误：以 didFinishDownloadingTo 同步记录的落盘结果为准
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let index = self.tasks.firstIndex(where: { $0.id == id }) else { return }
-            let record = self.tasks[index]
-            if record.state != .completed, record.fileName == nil {
-                self.tasks[index].state = .failed
-                self.tasks[index].errorMessage = "下载结果未知"
-                self.tasks[index].finishedAt = .now
-            } else if let name = record.fileName {
+            let result = DownloadResultBox.shared.take(id)
+            guard let index = self.tasks.firstIndex(where: { $0.id == id }) else {
+                // 记录已被删除：清理刚落地的文件，避免孤儿文件残留
+                if case .success(let name) = result {
+                    try? FileManager.default.removeItem(
+                        at: Storage.downloadsURL.appendingPathComponent(name)
+                    )
+                }
+                return
+            }
+
+            switch result {
+            case .success(let name):
                 self.tasks[index].state = .completed
                 self.tasks[index].progress = 1.0
+                self.tasks[index].fileName = name
                 self.tasks[index].errorMessage = nil
                 self.tasks[index].finishedAt = .now
-                _ = name
+            case .failure(let message):
+                self.tasks[index].state = .failed
+                self.tasks[index].errorMessage = message
+                self.tasks[index].finishedAt = .now
+            case nil:
+                if let name = self.tasks[index].fileName, !name.isEmpty {
+                    self.tasks[index].state = .completed
+                    self.tasks[index].progress = 1.0
+                    self.tasks[index].errorMessage = nil
+                    self.tasks[index].finishedAt = .now
+                } else {
+                    self.tasks[index].state = .failed
+                    self.tasks[index].errorMessage = "下载结果未知（服务端未返回文件）"
+                    self.tasks[index].finishedAt = .now
+                }
             }
             self.persist()
         }
