@@ -9,7 +9,7 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: VLCPlayerModel
     @State private var showControls = true
-    @State private var fillScreen = false
+    @State private var isLandscape = false
 
     init(url: URL, referer: String? = nil) {
         self.url = url
@@ -24,10 +24,21 @@ struct PlayerView: View {
                     Color.black
                     VLCVideoSurface(player: model.player)
                         .allowsHitTesting(false)
-                        .scaleEffect(fillScreen ? fillScale(in: geo.size) : 1)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
+                .onAppear {
+                    isLandscape = geo.size.width > geo.size.height
+                    if isLandscape {
+                        model.startPlayback()
+                    }
+                }
+                .onChange(of: geo.size) { size in
+                    isLandscape = size.width > size.height
+                    if isLandscape {
+                        model.startPlayback()
+                    }
+                }
             }
             .ignoresSafeArea()
 
@@ -66,7 +77,6 @@ struct PlayerView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .animation(.easeInOut(duration: 0.2), value: showControls)
-        .animation(.easeInOut(duration: 0.25), value: fillScreen)
         .onAppear(perform: start)
         .onDisappear(perform: stop)
     }
@@ -92,14 +102,14 @@ struct PlayerView: View {
             Spacer(minLength: 8)
 
             Button {
-                fillScreen.toggle()
+                toggleOrientation()
             } label: {
-                Image(systemName: fillScreen
-                      ? "arrow.down.right.and.arrow.up.left"
-                      : "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 34, height: 34)
-                    .background(.black.opacity(0.45), in: Circle())
+                Text(isLandscape ? "竖屏" : "横屏")
+                    .font(.footnote.weight(.semibold))
+                    .frame(minWidth: 44)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 10)
+                    .background(.black.opacity(0.45), in: Capsule())
             }
 
             speedMenu
@@ -173,8 +183,20 @@ struct PlayerView: View {
 
     private func start() {
         UIApplication.shared.isIdleTimerDisabled = true
+        isLandscape = activeWindowScene?.interfaceOrientation.isLandscape ?? false
         OrientationManager.shared.allowLandscape = true
+        OrientationManager.shared.userDidOverrideInitialOrientation = false
         requestOrientation(.landscapeRight)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard OrientationManager.shared.allowLandscape else { return }
+            if !OrientationManager.shared.userDidOverrideInitialOrientation {
+                requestOrientation(.landscapeRight)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            guard OrientationManager.shared.allowLandscape else { return }
+            model.startPlayback()
+        }
     }
 
     private func stop() {
@@ -190,23 +212,23 @@ struct PlayerView: View {
         }
     }
 
-    private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
+    private var activeWindowScene: UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
             .first
-        else { return }
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
     }
 
-    private func fillScale(in container: CGSize) -> CGFloat {
-        let size = model.videoSize
-        guard size.width > 0, size.height > 0,
-              container.width > 0, container.height > 0 else { return 1 }
-        let widthRatio = container.width / size.width
-        let heightRatio = container.height / size.height
-        let fit = min(widthRatio, heightRatio)
-        guard fit > 0 else { return 1 }
-        return max(widthRatio, heightRatio) / fit
+    private func toggleOrientation() {
+        guard let scene = activeWindowScene else { return }
+        OrientationManager.shared.userDidOverrideInitialOrientation = true
+        let target: UIInterfaceOrientationMask = scene.interfaceOrientation.isLandscape
+            ? .portrait
+            : .landscapeRight
+        requestOrientation(target)
+    }
+
+    private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
+        activeWindowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
     }
 
     private var displayName: String {
@@ -255,12 +277,13 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published private(set) var timeText = "00:00"
     @Published private(set) var durationText = "--:--"
     @Published private(set) var durationSeconds: Double = 0
-    @Published private(set) var videoSize: CGSize = .zero
     @Published private(set) var rate: Double = 1.0
     @Published private(set) var errorMessage: String?
 
     private var isSeeking = false
     private var didConfigureAudio = false
+    private var didStartPlayback = false
+    private var isStopped = false
 
     init(url: URL, referer: String?) {
         super.init()
@@ -276,6 +299,11 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         }
         media.addOptions(options)
         player.media = media
+    }
+
+    func startPlayback() {
+        guard !didStartPlayback, !isStopped else { return }
+        didStartPlayback = true
         player.play()
     }
 
@@ -300,6 +328,7 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     func stop() {
+        isStopped = true
         player.stop()
         player.drawable = nil
         player.delegate = nil
@@ -319,14 +348,6 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         durationSeconds = Double(length.intValue)
     }
 
-    private func refreshVideoSize() {
-        let size = player.videoSize
-        guard size.width > 0, size.height > 0 else { return }
-        if size != videoSize {
-            videoSize = size
-        }
-    }
-
     // MARK: - VLCMediaPlayerDelegate
 
     func mediaPlayerStateChanged(_ aNotification: Notification) {
@@ -339,7 +360,6 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             isPlaying = true
             errorMessage = nil
             updateDurations()
-            refreshVideoSize()
             if abs(Double(player.rate) - rate) > 0.01 {
                 player.rate = Float(rate)
             }
@@ -363,7 +383,6 @@ final class VLCPlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         guard !isSeeking else { return }
         timeText = player.time.stringValue
         updateDurations()
-        refreshVideoSize()
         if durationSeconds > 0 {
             position = Double(player.position)
         }
