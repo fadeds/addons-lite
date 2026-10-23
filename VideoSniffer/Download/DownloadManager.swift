@@ -46,6 +46,7 @@ final class DownloadManager: NSObject, ObservableObject {
         super.init()
         tasks = Storage.load([DownloadTaskRecord].self, from: DownloadManager.tasksFile) ?? []
         restoreInterruptedTasks()
+        pruneMissingFiles()
         _ = backgroundSession
     }
 
@@ -91,10 +92,15 @@ final class DownloadManager: NSObject, ObservableObject {
                     record.finishedAt = .now
                 }
             } else {
-                backgroundSession.getAllTasks { sessionTasks in
-                    sessionTasks
-                        .first(where: { $0.taskDescription == id })?
-                        .cancel()
+                backgroundSession.getAllTasks { [weak self] sessionTasks in
+                    let download = sessionTasks.first(where: { $0.taskDescription == id })
+                    Task { @MainActor [weak self] in
+                        if let download {
+                            download.cancel()
+                        } else {
+                            self?.markCancelledIfActive(id: id)
+                        }
+                    }
                 }
             }
         case .remuxing:
@@ -126,6 +132,13 @@ final class DownloadManager: NSObject, ObservableObject {
         persist()
     }
 
+    /// 文件被外部删除后，同步清掉对应任务记录，避免列表残留
+    func forgetFile(named fileName: String) {
+        let before = tasks.count
+        tasks.removeAll { $0.fileName == fileName }
+        if tasks.count != before { persist() }
+    }
+
     func fileURL(for task: DownloadTaskRecord) -> URL? {
         guard let fileName = task.fileName else { return nil }
         let url = Storage.downloadsURL.appendingPathComponent(fileName)
@@ -145,6 +158,26 @@ final class DownloadManager: NSObject, ObservableObject {
             }
         }
         if changed { persist() }
+    }
+
+    /// 已完成但文件已被删除（如从「文件」App 中删掉）的记录不再保留
+    private func pruneMissingFiles() {
+        let fm = FileManager.default
+        let before = tasks.count
+        tasks.removeAll { record in
+            guard record.state == .completed, let name = record.fileName else { return false }
+            let url = Storage.downloadsURL.appendingPathComponent(name)
+            return !fm.fileExists(atPath: url.path)
+        }
+        if tasks.count != before { persist() }
+    }
+
+    private func markCancelledIfActive(id: String) {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        guard tasks[index].isActive else { return }
+        tasks[index].state = .cancelled
+        tasks[index].finishedAt = .now
+        persist()
     }
 
     private func start(id: String) {
@@ -196,6 +229,12 @@ final class DownloadManager: NSObject, ObservableObject {
             }
             guard !Task.isCancelled else {
                 set(id: id) { $0.state = .cancelled; $0.finishedAt = .now }
+                return
+            }
+            guard tasks.contains(where: { $0.id == id }) else {
+                // 任务记录已被移除：删除刚落地的文件，避免孤儿文件残留
+                try? FileManager.default.removeItem(at: fileURL)
+                hlsTasks[id] = nil
                 return
             }
             set(id: id) { record in
@@ -295,6 +334,15 @@ extension DownloadManager: URLSessionDownloadDelegate {
         let failure = moveError
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.tasks.contains(where: { $0.id == id }) else {
+                // 记录已被删除：清理刚落地的文件，避免孤儿文件残留
+                if let name {
+                    try? FileManager.default.removeItem(
+                        at: Storage.downloadsURL.appendingPathComponent(name)
+                    )
+                }
+                return
+            }
             if let failure {
                 self.set(id: id) { record in
                     record.state = .failed

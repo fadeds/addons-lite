@@ -31,6 +31,18 @@ enum Storage {
         try? tmp.setResourceValues(values)
     }
 
+    /// 清理下载目录中遗留的隐藏临时项（HLS 工作目录 .UUID 等）
+    static func cleanupDownloadsArtifacts() {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: downloadsURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+        for url in entries where url.lastPathComponent.hasPrefix(".") {
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
     static func load<T: Decodable>(_ type: T.Type, from fileName: String) -> T? {
         let url = supportURL.appendingPathComponent(fileName)
         guard let data = try? Data(contentsOf: url) else { return nil }

@@ -34,6 +34,7 @@ permissions:
 env:
   SCHEME: VideoSniffer
   XCODEPROJ: VideoSniffer.xcodeproj
+  XCWORKSPACE: VideoSniffer.xcworkspace
 
 jobs:
   build:
@@ -78,6 +79,25 @@ jobs:
             tail -n 20 "$RUNNER_TEMP/xcodegen.log" | while IFS= read -r line; do
               echo "::error::$line"
             done
+            exit "$STATUS"
+          fi
+
+      - name: 安装 Pods 依赖（MobileVLCKit）
+        run: |
+          set +e
+          set -o pipefail
+          pod install 2>&1 | tee "$RUNNER_TEMP/pod.log"
+          STATUS=${PIPESTATUS[0]}
+          if [ "$STATUS" -ne 0 ]; then
+            echo "Pod 安装失败，提取错误："
+            ERRORS=$(grep -aE "error:|\[!\]|Unable to find" "$RUNNER_TEMP/pod.log" | head -n 10)
+            if [ -z "$ERRORS" ]; then
+              ERRORS=$(tail -n 15 "$RUNNER_TEMP/pod.log")
+            fi
+            printf '%s\n' "$ERRORS" | cut -c1-600 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -n 40 "$RUNNER_TEMP/pod.log"
             exit "$STATUS"
           fi
 
@@ -195,7 +215,7 @@ jobs:
 
           if [ "$SIGNED" = "true" ]; then
             xcodebuild archive \
-              -project "$XCODEPROJ" \
+              -workspace "$XCWORKSPACE" \
               -scheme "$SCHEME" \
               -configuration Release \
               -destination "generic/platform=iOS" \
@@ -210,7 +230,7 @@ jobs:
           else
             echo "无签名构建（TrollStore / 自签工具使用）"
             xcodebuild archive \
-              -project "$XCODEPROJ" \
+              -workspace "$XCWORKSPACE" \
               -scheme "$SCHEME" \
               -configuration Release \
               -destination "generic/platform=iOS" \

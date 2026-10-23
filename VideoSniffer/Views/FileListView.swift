@@ -1,5 +1,4 @@
 import SwiftUI
-import AVKit
 import Photos
 
 struct IdentifiableURL: Identifiable {
@@ -141,6 +140,7 @@ struct FileListView: View {
 
     private func delete(_ file: FileInfo) {
         try? FileManager.default.removeItem(at: file.url)
+        manager.forgetFile(named: file.name)
         reload()
     }
 

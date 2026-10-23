@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
 
     func onLaunch() async {
         Storage.ensureDirectories()
+        Storage.cleanupDownloadsArtifacts()
         await updateChecker.autoCheckIfNeeded()
     }
 

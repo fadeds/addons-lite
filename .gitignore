@@ -21,6 +21,9 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# CocoaPods
+Pods/
+
 # CI 临时文件
 exportOptions.plist
 *.p12
