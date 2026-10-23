@@ -24,9 +24,9 @@ xcuserdata/
 # CocoaPods
 Pods/
 
-# IJKMediaFramework 归档（zip 由 local tag 提供，master 不携带）
-vendor/IJKMediaFramework.zip
-vendor/IJKMediaFramework.framework/
+# IJKMediaFramework 归档（zip 由 local tag 提供，master 不携带二进制）
+vendor/IJKMediaFramework/*.zip
+vendor/IJKMediaFramework/IJKMediaFramework.framework/
 
 # CI 临时文件
 exportOptions.plist
