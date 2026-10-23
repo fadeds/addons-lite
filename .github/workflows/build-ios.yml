@@ -84,11 +84,32 @@ jobs:
 
       - name: 准备 IJK 本地框架
         run: |
-          mkdir -p vendor/IJKMediaFramework
-          if [ ! -d vendor/IJKMediaFramework/IJKMediaFramework.framework ]; then
-            unzip -q -o vendor/IJKMediaFramework/IJKMediaFramework.zip -d vendor/IJKMediaFramework
+          echo "::notice::准备 IJK 框架开始"
+          ls -l vendor/IJKMediaFramework || true
+          ZIP="vendor/IJKMediaFramework/IJKMediaFramework.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::找不到 $ZIP"
+            exit 1
           fi
-          ls -lh vendor/IJKMediaFramework/IJKMediaFramework.framework/IJKMediaFramework
+          echo "::notice::归档大小 $(stat -f%z "$ZIP") 字节"
+          if [ ! -f vendor/IJKMediaFramework/IJKMediaFramework.framework/IJKMediaFramework ]; then
+            if unzip -o -q "$ZIP" -d vendor/IJKMediaFramework; then
+              echo "::notice::unzip 解压完成"
+            elif ditto -x -k "$ZIP" vendor/IJKMediaFramework; then
+              echo "::notice::ditto 解压完成"
+            elif tar -xf "$ZIP" -C vendor/IJKMediaFramework; then
+              echo "::notice::tar 解压完成"
+            else
+              echo "::error::三种解压方式均失败"
+              exit 1
+            fi
+          fi
+          if [ ! -f vendor/IJKMediaFramework/IJKMediaFramework.framework/IJKMediaFramework ]; then
+            echo "::error::解压后未找到 IJKMediaFramework 二进制"
+            find vendor/IJKMediaFramework -maxdepth 3 | head -n 20
+            exit 1
+          fi
+          echo "::notice::IJK 框架就绪 $(du -sh vendor/IJKMediaFramework/IJKMediaFramework.framework | cut -f1)"
 
       - name: 缓存 CocoaPods
         uses: actions/cache@v4
