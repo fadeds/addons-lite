@@ -6,135 +6,310 @@ import MobileVLCKit
 struct PlayerView: View {
     let url: URL
     var referer: String?
-    var onLandscape: (() -> Void)?
-    var onPortrait: (() -> Void)?
-    @Environment(\.dismiss) private var dismiss
+
+    @Binding private var windowOffset: CGSize
+    @EnvironmentObject private var appState: AppState
     @StateObject private var model: VLCPlayerModel
+
     @State private var showControls = true
-    @State private var isLandscape = false
+    @State private var scrubPosition: Double?
+
+    @State private var hud: PlayerHUD?
+    @State private var hudToken = 0
+
+    @State private var dragMode: DragMode = .none
+    @State private var seekStartPosition: Double = 0
+    @State private var seekTarget: Double = 0
+    @State private var brightnessStart: CGFloat = 0
+    @State private var volumeStart: Float = 0
+
+    @State private var isDraggingWindow = false
+    @State private var windowDragStart: CGSize = .zero
+
+    private enum DragMode {
+        case none, seek, brightness, volume
+    }
+
+    private struct PlayerHUD: Equatable {
+        let icon: String
+        let text: String
+        let progress: Double?
+    }
 
     init(
         url: URL,
         referer: String? = nil,
-        onLandscape: (() -> Void)? = nil,
-        onPortrait: (() -> Void)? = nil
+        windowOffset: Binding<CGSize> = .constant(.zero)
     ) {
         self.url = url
         self.referer = referer
-        self.onLandscape = onLandscape
-        self.onPortrait = onPortrait
+        _windowOffset = windowOffset
         _model = StateObject(wrappedValue: VLCPlayerModel(url: url, referer: referer))
     }
 
     var body: some View {
-        ZStack {
-            GeometryReader { geo in
-                let windowWidth = isLandscape
-                    ? geo.size.width
-                    : max(geo.size.width - 32, 160)
-                let windowHeight = isLandscape
-                    ? geo.size.height
-                    : windowWidth * 9 / 16
-                ZStack {
-                    Color.black
-                    VLCVideoSurface(player: model.player)
-                        .allowsHitTesting(false)
-                        .frame(width: windowWidth, height: windowHeight)
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-                .clipped()
-                .onAppear {
-                    updateOrientation(fallback: geo.size)
-                }
-                .onChange(of: geo.size) { size in
-                    updateOrientation(fallback: size)
-                }
-            }
-            .ignoresSafeArea()
+        GeometryReader { geo in
+            let expanded = appState.playerExpanded
+            let barHeight: CGFloat = expanded ? 0 : 38
+            let videoHeight = expanded ? geo.size.height : max(geo.size.height - barHeight, 1)
+            let isLandscape = geo.size.width > geo.size.height
+            let horizontalPadding: CGFloat = expanded ? (isLandscape ? 48 : 20) : 10
 
-            Color.clear
-                .contentShape(Rectangle())
-                .ignoresSafeArea()
-                .onTapGesture { toggleControls() }
+            ZStack(alignment: .top) {
+                Color.black
 
-            if let error = model.errorMessage {
-                VStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                    Text(error)
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
+                VLCVideoSurface(player: model.player)
+                    .allowsHitTesting(false)
+                    .frame(width: geo.size.width, height: videoHeight)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+
+                gestureLayer(size: CGSize(width: geo.size.width, height: videoHeight))
+                    .frame(width: geo.size.width, height: videoHeight)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+
+                if let error = model.errorMessage {
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                        Text(error)
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(24)
+                    .position(x: geo.size.width / 2, y: barHeight + videoHeight / 2)
+                } else if model.isBuffering {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(1.3)
+                        .position(x: geo.size.width / 2, y: barHeight + videoHeight / 2)
                 }
-                .foregroundStyle(.white)
-                .padding(24)
-            } else if model.isBuffering {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .tint(.white)
-                    .scaleEffect(1.4)
-            }
 
-            if showControls {
+                if let hud {
+                    hudView(hud)
+                        .position(x: geo.size.width / 2, y: barHeight + videoHeight / 2)
+                        .transition(.opacity)
+                }
+
                 VStack(spacing: 0) {
-                    topBar
+                    if expanded {
+                        if showControls {
+                            fullTopBar(horizontalPadding: horizontalPadding)
+                        }
+                    } else {
+                        miniTopBar
+                    }
+
                     Spacer(minLength: 0)
-                    bottomBar
+
+                    if showControls {
+                        if expanded {
+                            fullBottomBar(horizontalPadding: horizontalPadding)
+                        } else {
+                            miniBottomBar
+                        }
+                    }
                 }
-                .transition(.opacity)
             }
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: expanded ? 0 : 14,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                if !expanded {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: showControls)
         }
         .background(Color.black)
-        .statusBarHidden(isLandscape)
-        .persistentSystemOverlays(isLandscape ? .hidden : .automatic)
-        .animation(.easeInOut(duration: 0.2), value: showControls)
+        .statusBarHidden(appState.playerExpanded)
+        .persistentSystemOverlays(appState.playerExpanded ? .hidden : .automatic)
         .onAppear(perform: start)
         .onDisappear(perform: stop)
+        .onChange(of: appState.playerExpanded) { expanded in
+            if expanded {
+                OrientationManager.shared.allowLandscape = true
+                requestOrientation(.landscapeRight)
+            } else {
+                OrientationManager.shared.allowLandscape = false
+                requestOrientation(.portrait)
+            }
+        }
     }
 
-    // MARK: - 控件
+    // MARK: - 顶部栏
 
-    private var topBar: some View {
-        VStack(spacing: 6) {
-            if !isLandscape {
-                Capsule()
-                    .fill(.white.opacity(0.3))
-                    .frame(width: 36, height: 5)
+    private var miniTopBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white.opacity(0.55))
+
+            Text(displayName)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+
+            Spacer(minLength: 4)
+
+            Button {
+                windowOffset = .zero
+                showControls = true
+                appState.playerExpanded = true
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
 
-            HStack(spacing: 12) {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 15, weight: .bold))
-                        .frame(width: 34, height: 34)
-                        .background(.black.opacity(0.45), in: Circle())
-                }
-
-                Text(displayName)
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(1)
-
-                Spacer(minLength: 8)
-
-                Button {
-                    toggleOrientation()
-                } label: {
-                    Text(isLandscape ? "竖屏" : "横屏")
-                        .font(.footnote.weight(.semibold))
-                        .frame(minWidth: 44)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 10)
-                        .background(.black.opacity(0.45), in: Capsule())
-                }
-
-                speedMenu
+            Button {
+                close()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 10)
+        .frame(height: 38)
+        .background(.black.opacity(0.6))
+        .contentShape(Rectangle())
+        .gesture(windowDragGesture)
+    }
+
+    private func fullTopBar(horizontalPadding: CGFloat) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                close()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(width: 34, height: 34)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+
+            Text(displayName)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button {
+                showControls = true
+                appState.playerExpanded = false
+            } label: {
+                Text("小窗")
+                    .font(.footnote.weight(.semibold))
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 14)
+                    .background(.black.opacity(0.45), in: Capsule())
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, horizontalPadding)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .background(
+            LinearGradient(
+                colors: [.black.opacity(0.65), .black.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    // MARK: - 底部栏
+
+    private var miniBottomBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                model.togglePlay()
+            } label: {
+                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.footnote.weight(.bold))
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+
+            Text(displayTime)
+                .font(.caption2.monospacedDigit())
+
+            Spacer(minLength: 4)
+
+            Text(model.durationText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            LinearGradient(
+                colors: [.black.opacity(0), .black.opacity(0.72)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private func fullBottomBar(horizontalPadding: CGFloat) -> some View {
+        VStack(spacing: 2) {
+            Slider(
+                value: Binding(
+                    get: { scrubPosition ?? model.position },
+                    set: { scrubPosition = $0 }
+                ),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    guard !editing, let target = scrubPosition else { return }
+                    model.seek(to: target)
+                    scrubPosition = nil
+                }
+            )
+            .tint(.white)
+            .disabled(model.durationSeconds <= 0)
+
+            HStack(spacing: 16) {
+                Button {
+                    model.togglePlay()
+                } label: {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title3)
+                        .frame(width: 34, height: 30)
+                        .contentShape(Rectangle())
+                }
+
+                Text(displayTime)
+                    .font(.caption.monospacedDigit())
+
+                Spacer()
+
+                Text(model.durationText)
+                    .font(.caption.monospacedDigit())
+
+                speedMenu
+            }
+            .foregroundStyle(.white)
+        }
+        .padding(.horizontal, horizontalPadding)
         .padding(.top, 8)
+        .padding(.bottom, 12)
+        .background(
+            LinearGradient(
+                colors: [.black.opacity(0), .black.opacity(0.72)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     private var speedMenu: some View {
@@ -155,67 +330,165 @@ struct PlayerView: View {
                 .font(.footnote.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(minWidth: 44)
-                .padding(.vertical, 8)
-                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
                 .background(.black.opacity(0.45), in: Capsule())
         }
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 6) {
-            Slider(
-                value: Binding(
-                    get: { model.position },
-                    set: { model.seek(to: $0) }
-                ),
-                in: 0...1
-            )
-            .tint(.white)
-            .disabled(model.durationSeconds <= 0)
+    // MARK: - 手势
 
-            HStack(spacing: 14) {
-                Button {
-                    model.togglePlay()
-                } label: {
-                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title2)
-                        .frame(width: 40, height: 34)
+    private func gestureLayer(size: CGSize) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(videoDragGesture(size: size))
+            .onTapGesture {
+                toggleControls()
+            }
+    }
+
+    private func videoDragGesture(size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onChanged { gesture in
+                if dragMode == .none {
+                    let dx = gesture.translation.width
+                    let dy = gesture.translation.height
+                    if abs(dx) > abs(dy) * 1.2 {
+                        dragMode = .seek
+                        seekStartPosition = model.position
+                        seekTarget = model.position
+                    } else if gesture.startLocation.x < size.width / 2 {
+                        dragMode = .brightness
+                        brightnessStart = currentBrightness
+                    } else {
+                        dragMode = .volume
+                        volumeStart = SystemVolume.shared.value
+                    }
                 }
 
-                Text(model.timeText)
-                    .font(.caption.monospacedDigit())
+                switch dragMode {
+                case .seek:
+                    guard model.durationSeconds > 0 else { return }
+                    let delta = Double(gesture.translation.width / max(size.width, 1))
+                    let target = min(max(seekStartPosition + delta, 0), 1)
+                    seekTarget = target
+                    let seconds = target * model.durationSeconds
+                    showHUD(
+                        PlayerHUD(
+                            icon: delta >= 0 ? "goforward" : "gobackward",
+                            text: "\(Self.formatTime(seconds)) / \(Self.formatTime(model.durationSeconds))",
+                            progress: target
+                        )
+                    )
 
-                Spacer()
+                case .brightness:
+                    let delta = -Double(gesture.translation.height / max(size.height, 1))
+                    let value = min(max(Double(brightnessStart) + delta, 0), 1)
+                    setBrightness(CGFloat(value))
+                    showHUD(
+                        PlayerHUD(
+                            icon: "sun.max.fill",
+                            text: "亮度 \(Int(value * 100))%",
+                            progress: value
+                        )
+                    )
 
-                Text(model.durationText)
-                    .font(.caption.monospacedDigit())
+                case .volume:
+                    let delta = -Double(gesture.translation.height / max(size.height, 1))
+                    let value = min(max(Double(volumeStart) + delta, 0), 1)
+                    SystemVolume.shared.set(Float(value))
+                    showHUD(
+                        PlayerHUD(
+                            icon: value <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                            text: "音量 \(Int(value * 100))%",
+                            progress: value
+                        )
+                    )
+
+                case .none:
+                    break
+                }
             }
-            .foregroundStyle(.white)
+            .onEnded { _ in
+                if dragMode == .seek {
+                    model.seek(to: seekTarget)
+                }
+                dragMode = .none
+                scheduleHUDHide(after: 0.8)
+            }
+    }
+
+    private var windowDragGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { gesture in
+                if !isDraggingWindow {
+                    isDraggingWindow = true
+                    windowDragStart = windowOffset
+                }
+                windowOffset = CGSize(
+                    width: windowDragStart.width + gesture.translation.width,
+                    height: windowDragStart.height + gesture.translation.height
+                )
+            }
+            .onEnded { _ in
+                isDraggingWindow = false
+            }
+    }
+
+    private var currentBrightness: CGFloat {
+        activeWindowScene?.screen.brightness ?? 0.5
+    }
+
+    private func setBrightness(_ value: CGFloat) {
+        activeWindowScene?.screen.brightness = min(max(value, 0), 1)
+    }
+
+    // MARK: - HUD
+
+    private func hudView(_ hud: PlayerHUD) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: hud.icon)
+                .font(.title3)
+
+            Text(hud.text)
+                .font(.caption.monospacedDigit())
+
+            if let progress = hud.progress {
+                ProgressView(value: progress)
+                    .tint(.white)
+                    .frame(width: 110)
+            }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func showHUD(_ newHUD: PlayerHUD) {
+        hudToken += 1
+        withAnimation(.easeOut(duration: 0.12)) {
+            hud = newHUD
+        }
+    }
+
+    private func scheduleHUDHide(after delay: Double) {
+        hudToken += 1
+        let token = hudToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard hudToken == token else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                hud = nil
+            }
+        }
     }
 
     // MARK: - 生命周期
 
     private func start() {
         UIApplication.shared.isIdleTimerDisabled = true
-        OrientationManager.shared.allowLandscape = true
+        OrientationManager.shared.allowLandscape = false
         model.startPlayback()
-    }
-
-    private func updateOrientation(fallback size: CGSize) {
-        let landscape = activeWindowScene?.interfaceOrientation.isLandscape
-            ?? (size.width > size.height)
-        if isLandscape != landscape {
-            isLandscape = landscape
-        }
-        if landscape {
-            onLandscape?()
-        } else {
-            onPortrait?()
-        }
     }
 
     private func stop() {
@@ -225,10 +498,18 @@ struct PlayerView: View {
         model.stop()
     }
 
+    private func close() {
+        appState.closePlayer()
+    }
+
     private func toggleControls() {
         withAnimation(.easeInOut(duration: 0.2)) {
             showControls.toggle()
         }
+    }
+
+    private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
+        activeWindowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
     }
 
     private var activeWindowScene: UIWindowScene? {
@@ -237,21 +518,29 @@ struct PlayerView: View {
             .first
     }
 
-    private func toggleOrientation() {
-        guard let scene = activeWindowScene else { return }
-        let target: UIInterfaceOrientationMask = scene.interfaceOrientation.isLandscape
-            ? .portrait
-            : .landscapeRight
-        requestOrientation(target)
-    }
-
-    private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
-        activeWindowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
-    }
+    // MARK: - 展示
 
     private var displayName: String {
         let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
         return name.isEmpty ? "播放" : name
+    }
+
+    private var displayTime: String {
+        if let scrubPosition, model.durationSeconds > 0 {
+            return Self.formatTime(scrubPosition * model.durationSeconds)
+        }
+        return model.timeText
+    }
+
+    private static func formatTime(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
     }
 }
 

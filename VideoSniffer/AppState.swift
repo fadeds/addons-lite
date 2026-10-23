@@ -9,6 +9,9 @@ final class AppState: ObservableObject {
     @Published var pendingVideos: [VideoInfo] = []
     @Published var toast: String?
 
+    @Published var playingFileURL: URL?
+    @Published var playerExpanded = false
+
     let downloadManager = DownloadManager.shared
     let updateChecker = UpdateChecker()
 
@@ -83,6 +86,18 @@ final class AppState: ObservableObject {
         }
         addPending(VideoInfo(url: text, source: .clipboard))
         showToast("已从剪贴板添加")
+    }
+
+    // MARK: - 播放器
+
+    func playFile(_ url: URL) {
+        playerExpanded = false
+        playingFileURL = url
+    }
+
+    func closePlayer() {
+        playerExpanded = false
+        playingFileURL = nil
     }
 
     // MARK: - 更新
