@@ -5,7 +5,7 @@ source 'https://cdn.cocoapods.org/'
 target 'VideoSniffer' do
   use_frameworks! :linkage => :static
 
-  pod 'IJKMediaFramework', '0.1.5'
+  pod 'IJKMediaFramework', :podspec => 'IJKMediaFramework.podspec'
 end
 
 post_install do |installer|

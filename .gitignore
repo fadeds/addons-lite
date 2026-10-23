@@ -24,6 +24,9 @@ xcuserdata/
 # CocoaPods
 Pods/
 
+# IJKMediaFramework 归档解压产物
+vendor/IJKMediaFramework.framework/
+
 # CI 临时文件
 exportOptions.plist
 *.p12
