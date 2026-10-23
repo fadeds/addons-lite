@@ -21,20 +21,25 @@ final class BackgroundCompletionBox: @unchecked Sendable {    static let shared 
     }
 }
 
+enum DownloadOutcome {
+    case success(String)
+    case failure(String)
+}
+
 /// 在 didFinishDownloadingTo 与 didCompleteWithError 之间同步落盘结果，避免并发任务乱序
 final class DownloadResultBox: @unchecked Sendable {
     static let shared = DownloadResultBox()
 
     private let lock = NSLock()
-    private var results: [String: Result<String, String>] = [:]
+    private var results: [String: DownloadOutcome] = [:]
 
-    func store(_ result: Result<String, String>, for id: String) {
+    func store(_ result: DownloadOutcome, for id: String) {
         lock.lock()
         results[id] = result
         lock.unlock()
     }
 
-    func take(_ id: String) -> Result<String, String>? {
+    func take(_ id: String) -> DownloadOutcome? {
         lock.lock()
         defer { lock.unlock() }
         return results.removeValue(forKey: id)
@@ -379,7 +384,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 // 已落盘但任务报错：删除文件，避免残留
-                if case .success(let name) = stored {
+                if case .some(.success(let name)) = stored {
                     try? FileManager.default.removeItem(
                         at: Storage.downloadsURL.appendingPathComponent(name)
                     )
@@ -406,7 +411,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             let result = DownloadResultBox.shared.take(id)
             guard let index = self.tasks.firstIndex(where: { $0.id == id }) else {
                 // 记录已被删除：清理刚落地的文件，避免孤儿文件残留
-                if case .success(let name) = result {
+                if case .some(.success(let name)) = result {
                     try? FileManager.default.removeItem(
                         at: Storage.downloadsURL.appendingPathComponent(name)
                     )
@@ -415,17 +420,17 @@ extension DownloadManager: URLSessionDownloadDelegate {
             }
 
             switch result {
-            case .success(let name):
+            case .some(.success(let name)):
                 self.tasks[index].state = .completed
                 self.tasks[index].progress = 1.0
                 self.tasks[index].fileName = name
                 self.tasks[index].errorMessage = nil
                 self.tasks[index].finishedAt = .now
-            case .failure(let message):
+            case .some(.failure(let message)):
                 self.tasks[index].state = .failed
                 self.tasks[index].errorMessage = message
                 self.tasks[index].finishedAt = .now
-            case nil:
+            case .none:
                 if let name = self.tasks[index].fileName, !name.isEmpty {
                     self.tasks[index].state = .completed
                     self.tasks[index].progress = 1.0
