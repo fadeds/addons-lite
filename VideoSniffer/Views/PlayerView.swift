@@ -613,13 +613,13 @@ final class IJKPlayerModel: NSObject, ObservableObject {
     private var isSeeking = false
 
     init(url: URL, referer: String?) {
-        let options: IJKFFOptions = IJKFFOptions.optionsByDefault()
+        let options: IJKFFOptions = IJKFFOptions.byDefault()
         options.setPlayerOptionIntValue(1, forKey: "videotoolbox")
         options.setPlayerOptionIntValue(3840, forKey: "videotoolbox-max-frame-width")
         options.setPlayerOptionIntValue(1, forKey: "enable-accurate-seek")
         options.setPlayerOptionIntValue(1, forKey: "framedrop")
 
-        player = IJKFFMoviePlayerController(contentURL: url, withOptions: options)
+        player = IJKFFMoviePlayerController(contentURL: url, with: options)
         super.init()
 
         _ = referer
