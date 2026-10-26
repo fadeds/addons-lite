@@ -34,13 +34,12 @@ permissions:
 env:
   SCHEME: VideoSniffer
   XCODEPROJ: VideoSniffer.xcodeproj
-  XCWORKSPACE: VideoSniffer.xcworkspace
 
 jobs:
   build:
     name: 打包 ipa
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -82,52 +81,26 @@ jobs:
             exit "$STATUS"
           fi
 
-      - name: 准备 IJK 本地框架
-        run: |
-          echo "::notice::准备 IJK 框架开始"
-          ls -l vendor/IJKMediaFramework || true
-          ZIP="vendor/IJKMediaFramework/IJKMediaFramework.zip"
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::找不到 $ZIP"
-            exit 1
-          fi
-          echo "::notice::归档大小 $(stat -f%z "$ZIP") 字节"
-          if [ ! -f vendor/IJKMediaFramework/IJKMediaFramework.framework/IJKMediaFramework ]; then
-            if unzip -o -q "$ZIP" -d vendor/IJKMediaFramework; then
-              echo "::notice::unzip 解压完成"
-            elif ditto -x -k "$ZIP" vendor/IJKMediaFramework; then
-              echo "::notice::ditto 解压完成"
-            elif tar -xf "$ZIP" -C vendor/IJKMediaFramework; then
-              echo "::notice::tar 解压完成"
-            else
-              echo "::error::三种解压方式均失败"
-              exit 1
-            fi
-          fi
-          if [ ! -f vendor/IJKMediaFramework/IJKMediaFramework.framework/IJKMediaFramework ]; then
-            echo "::error::解压后未找到 IJKMediaFramework 二进制"
-            find vendor/IJKMediaFramework -maxdepth 3 | head -n 20
-            exit 1
-          fi
-          echo "::notice::IJK 框架就绪 $(du -sh vendor/IJKMediaFramework/IJKMediaFramework.framework | cut -f1)"
-
-      - name: 缓存 CocoaPods
+      - name: 缓存 SPM 依赖
         uses: actions/cache@v4
         with:
-          path: ~/Library/Caches/CocoaPods
-          key: cocoapods-${{ runner.os }}-${{ hashFiles('Podfile') }}
+          path: ${{ runner.temp }}/spm
+          key: spm-${{ runner.os }}-${{ hashFiles('project.yml') }}
           restore-keys: |
-            cocoapods-${{ runner.os }}-
+            spm-${{ runner.os }}-
 
-      - name: 安装 Pods 依赖（IJKMediaFramework）
+      - name: 解析 SPM 依赖（KSPlayer / FFmpegKit）
         run: |
           set +e
           set -o pipefail
-          pod install 2>&1 | tee "$RUNNER_TEMP/pod.log"
+          xcodebuild -resolvePackageDependencies \
+            -project "$XCODEPROJ" \
+            -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" 2>&1 | tee "$RUNNER_TEMP/spm.log"
           STATUS=${PIPESTATUS[0]}
           if [ "$STATUS" -ne 0 ]; then
-            echo "::error::pod install 失败 exit=$STATUS，完整日志如下"
-            head -n 120 "$RUNNER_TEMP/pod.log" | while IFS= read -r line; do
+            echo "::error::SPM 解析失败 exit=$STATUS，完整日志如下"
+            tail -n 120 "$RUNNER_TEMP/spm.log" | while IFS= read -r line; do
               echo "::error::$line"
             done
             exit "$STATUS"
@@ -247,11 +220,12 @@ jobs:
 
           if [ "$SIGNED" = "true" ]; then
             xcodebuild archive \
-              -workspace "$XCWORKSPACE" \
+              -project "$XCODEPROJ" \
               -scheme "$SCHEME" \
               -configuration Release \
               -destination "generic/platform=iOS" \
               -archivePath "$RUNNER_TEMP/VideoSniffer.xcarchive" \
+              -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" \
               DEVELOPMENT_TEAM="$TEAM_ID" \
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="${{ steps.sign.outputs.identity }}" \
@@ -262,11 +236,12 @@ jobs:
           else
             echo "无签名构建（TrollStore / 自签工具使用）"
             xcodebuild archive \
-              -workspace "$XCWORKSPACE" \
+              -project "$XCODEPROJ" \
               -scheme "$SCHEME" \
               -configuration Release \
               -destination "generic/platform=iOS" \
               -archivePath "$RUNNER_TEMP/VideoSniffer.xcarchive" \
+              -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" \
               CODE_SIGNING_ALLOWED=NO \
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_IDENTITY="" \

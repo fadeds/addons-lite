@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
-import IJKMediaFramework
+import KSPlayer
 
 struct PlayerView: View {
     let url: URL
@@ -9,7 +9,7 @@ struct PlayerView: View {
 
     @Binding private var windowOffset: CGSize
     @EnvironmentObject private var appState: AppState
-    @StateObject private var model: IJKPlayerModel
+    @StateObject private var model: KSPlayerModel
 
     @State private var showControls = true
     @State private var scrubPosition: Double?
@@ -44,7 +44,7 @@ struct PlayerView: View {
         self.url = url
         self.referer = referer
         _windowOffset = windowOffset
-        _model = StateObject(wrappedValue: IJKPlayerModel(url: url, referer: referer))
+        _model = StateObject(wrappedValue: KSPlayerModel(url: url, referer: referer))
     }
 
     var body: some View {
@@ -58,7 +58,7 @@ struct PlayerView: View {
             ZStack(alignment: .top) {
                 Color.black
 
-                IJKVideoSurface(player: model.player)
+                KSVideoSurface(player: model.playerLayer)
                     .allowsHitTesting(false)
                     .frame(width: geo.size.width, height: videoHeight)
                     .frame(maxHeight: .infinity, alignment: .bottom)
@@ -315,19 +315,19 @@ struct PlayerView: View {
 
     private var speedMenu: some View {
         Menu {
-            ForEach(IJKPlayerModel.rates, id: \.self) { rate in
+            ForEach(KSPlayerModel.rates, id: \.self) { rate in
                 Button {
                     model.setRate(rate)
                 } label: {
                     if abs(model.rate - rate) < 0.01 {
-                        Label(IJKPlayerModel.rateText(rate), systemImage: "checkmark")
+                        Label(KSPlayerModel.rateText(rate), systemImage: "checkmark")
                     } else {
-                        Text(IJKPlayerModel.rateText(rate))
+                        Text(KSPlayerModel.rateText(rate))
                     }
                 }
             }
         } label: {
-            Text(IJKPlayerModel.rateText(model.rate))
+            Text(KSPlayerModel.rateText(model.rate))
                 .font(.footnote.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(minWidth: 44)
@@ -377,7 +377,7 @@ struct PlayerView: View {
                     showHUD(
                         PlayerHUD(
                             icon: delta >= 0 ? "goforward" : "gobackward",
-                            text: "\(IJKPlayerModel.formatTime(seconds)) / \(IJKPlayerModel.formatTime(model.durationSeconds))",
+                            text: "\(KSPlayerModel.formatTime(seconds)) / \(KSPlayerModel.formatTime(model.durationSeconds))",
                             progress: target
                         )
                     )
@@ -528,46 +528,47 @@ struct PlayerView: View {
 
     private var displayTime: String {
         if let scrubPosition, model.durationSeconds > 0 {
-            return IJKPlayerModel.formatTime(scrubPosition * model.durationSeconds)
+            return KSPlayerModel.formatTime(scrubPosition * model.durationSeconds)
         }
         return model.timeText
     }
 }
 
-private struct IJKVideoSurface: UIViewRepresentable {
-    let player: IJKFFMoviePlayerController
+private struct KSVideoSurface: UIViewRepresentable {
+    let player: KSPlayerLayer
 
     func makeUIView(context: Context) -> UIView {
-        let container = IJKPlayerContainerView()
+        let container = KSPlayerContainerView()
         container.backgroundColor = .black
         container.isUserInteractionEnabled = false
-
-        let surface: UIView = player.view
-        surface.backgroundColor = .black
-        surface.isUserInteractionEnabled = false
-        surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        surface.frame = container.bounds
-        container.addSubview(surface)
+        attachSurface(container)
         return container
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        let surface: UIView = player.view
-        if surface.superview !== uiView {
-            uiView.addSubview(surface)
+        attachSurface(uiView)
+    }
+
+    private func attachSurface(_ container: UIView) {
+        guard let surface = player.player.view else { return }
+        if surface.superview !== container {
+            surface.backgroundColor = .black
+            surface.isUserInteractionEnabled = false
+            surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            container.addSubview(surface)
         }
-        surface.frame = uiView.bounds
+        surface.frame = container.bounds
     }
 }
 
-private final class IJKPlayerContainerView: UIView {
+private final class KSPlayerContainerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         subviews.first?.frame = bounds
     }
 }
 
-final class IJKPlayerModel: NSObject, ObservableObject {
+final class KSPlayerModel: NSObject, ObservableObject, KSPlayerLayerDelegate {
     static let rates: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     static func rateText(_ rate: Double) -> String {
@@ -593,7 +594,7 @@ final class IJKPlayerModel: NSObject, ObservableObject {
         return String(format: "%02d:%02d", minutes, secs)
     }
 
-    let player: IJKFFMoviePlayerController!
+    let playerLayer: KSPlayerLayer
 
     @Published private(set) var isPlaying = false
     @Published private(set) var isBuffering = true
@@ -604,47 +605,35 @@ final class IJKPlayerModel: NSObject, ObservableObject {
     @Published private(set) var rate: Double = 1.0
     @Published private(set) var errorMessage: String?
 
-    private var observers: [NSObjectProtocol] = []
-    private var timeTimer: Timer?
     private var didStartPlayback = false
     private var didConfigureAudio = false
     private var isStopped = false
-    private var pendingPlay = false
     private var isSeeking = false
 
     init(url: URL, referer: String?) {
-        let options: IJKFFOptions = IJKFFOptions.byDefault()
-        options.setPlayerOptionIntValue(1, forKey: "videotoolbox")
-        options.setPlayerOptionIntValue(3840, forKey: "videotoolbox-max-frame-width")
-        options.setPlayerOptionIntValue(1, forKey: "enable-accurate-seek")
-        options.setPlayerOptionIntValue(1, forKey: "framedrop")
+        let options = KSOptions()
+        options.isAccurateSeek = true
+        options.registerRemoteControll = false
+        options.referer = referer
 
-        player = IJKFFMoviePlayerController(contentURL: url, with: options)
+        playerLayer = KSPlayerLayer(url: url, isAutoPlay: false, options: options)
         super.init()
 
-        _ = referer
-
-        player.scalingMode = .aspectFit
-        player.shouldAutoplay = false
-        player.setPauseInBackground(false)
-        player.view.backgroundColor = .black
-        player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-
-        installObservers()
+        playerLayer.delegate = self
+        playerLayer.player.contentMode = .scaleAspectFit
+        playerLayer.player.view?.backgroundColor = .black
     }
 
     func startPlayback() {
         guard !didStartPlayback, !isStopped else { return }
         didStartPlayback = true
-        pendingPlay = true
-        player.prepareToPlay()
-        startTimer()
+        isBuffering = true
+        play()
     }
 
     func togglePlay() {
-        if player.isPlaying() {
-            player.pause()
-            isPlaying = false
+        if playerLayer.state.isPlaying {
+            playerLayer.pause()
         } else {
             play()
         }
@@ -653,17 +642,7 @@ final class IJKPlayerModel: NSObject, ObservableObject {
     func play() {
         guard !isStopped else { return }
         configureAudioIfNeeded()
-        if player.isPreparedToPlay {
-            player.play()
-            isPlaying = true
-        } else {
-            pendingPlay = true
-            if !didStartPlayback {
-                didStartPlayback = true
-                player.prepareToPlay()
-                startTimer()
-            }
-        }
+        playerLayer.play()
     }
 
     func seek(to value: Double) {
@@ -671,50 +650,37 @@ final class IJKPlayerModel: NSObject, ObservableObject {
         let clamped = min(max(value, 0), 1)
         let target = clamped * durationSeconds
         isSeeking = true
-        player.currentPlaybackTime = target
         position = clamped
         timeText = Self.formatTime(target)
         if isPlaying {
             isBuffering = true
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.isSeeking = false
+        playerLayer.seek(time: target, autoPlay: playerLayer.state.isPlaying) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                self?.isSeeking = false
+            }
         }
     }
 
     func setRate(_ value: Double) {
         rate = value
-        player.playbackRate = Float(value)
+        playerLayer.player.playbackRate = Float(value)
     }
 
     func stop() {
         guard !isStopped else { return }
         isStopped = true
-        timeTimer?.invalidate()
-        timeTimer = nil
-        observers.forEach { NotificationCenter.default.removeObserver($0) }
-        observers.removeAll()
-        player.stop()
-        player.shutdown()
+        playerLayer.delegate = nil
+        playerLayer.stop()
         isPlaying = false
         isBuffering = false
     }
 
     deinit {
-        timeTimer?.invalidate()
-        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        playerLayer.delegate = nil
         if !isStopped {
-            player.shutdown()
+            playerLayer.stop()
         }
-    }
-
-    private func startTimer() {
-        guard timeTimer == nil else { return }
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-        timeTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func configureAudioIfNeeded() {
@@ -725,123 +691,79 @@ final class IJKPlayerModel: NSObject, ObservableObject {
         try? session.setActive(true)
     }
 
-    private func installObservers() {
-        let center = NotificationCenter.default
-        let prepared = Notification.Name.IJKMPMediaPlaybackIsPreparedToPlayDidChange
-        let stateChanged = Notification.Name.IJKMPMoviePlayerPlaybackStateDidChange
-        let loadChanged = Notification.Name.IJKMPMoviePlayerLoadStateDidChange
-        let finished = Notification.Name.IJKMPMoviePlayerPlaybackDidFinish
+    // MARK: - KSPlayerLayerDelegate
 
-        observers.append(center.addObserver(forName: prepared, object: player, queue: .main) { [weak self] _ in
-            self?.handlePrepared()
-        })
-        observers.append(center.addObserver(forName: stateChanged, object: player, queue: .main) { [weak self] _ in
-            self?.handlePlaybackState()
-        })
-        observers.append(center.addObserver(forName: loadChanged, object: player, queue: .main) { [weak self] _ in
-            self?.handleLoadState()
-        })
-        observers.append(center.addObserver(forName: finished, object: player, queue: .main) { [weak self] notification in
-            self?.handleFinish(notification)
-        })
-    }
-
-    private func handlePrepared() {
+    func player(layer: KSPlayerLayer, state: KSPlayerState) {
         guard !isStopped else { return }
-        updateDuration()
-        if pendingPlay {
-            pendingPlay = false
-            configureAudioIfNeeded()
-            player.play()
-        }
-    }
-
-    private func handlePlaybackState() {
-        guard !isStopped else { return }
-        switch player.playbackState.rawValue {
-        case 0:
+        switch state {
+        case .initialized:
             isPlaying = false
             isBuffering = false
-        case 1:
-            configureAudioIfNeeded()
+        case .preparing, .readyToPlay:
+            isPlaying = false
+            isBuffering = true
+        case .buffering:
+            isPlaying = true
+            isBuffering = true
+        case .bufferFinished:
             isPlaying = true
             isBuffering = false
             errorMessage = nil
             updateDuration()
-            if abs(Double(player.playbackRate) - rate) > 0.01 {
-                player.playbackRate = Float(rate)
+            if abs(Double(layer.player.playbackRate) - rate) > 0.01 {
+                layer.player.playbackRate = Float(rate)
             }
-        case 2:
+        case .paused:
             isPlaying = false
             isBuffering = false
-            updateDuration()
-        case 3:
+        case .playedToTheEnd:
             isPlaying = false
-            isBuffering = true
-        case 4, 5:
-            isBuffering = true
-        default:
-            break
-        }
-    }
-
-    private func handleLoadState() {
-        guard !isStopped else { return }
-        let load = player.loadState.rawValue
-        if (load & 4) != 0 {
-            isBuffering = true
-        } else if (load & 3) != 0 {
-            if player.isPlaying() {
-                isBuffering = false
-            }
-        }
-    }
-
-    private func handleFinish(_ notification: Notification) {
-        guard !isStopped else { return }
-        let info = notification.userInfo?[IJKMPMoviePlayerPlaybackDidFinishReasonUserInfoKey]
-        let raw: Int
-        if let value = info as? NSNumber {
-            raw = value.intValue
-        } else if let value = info as? Int {
-            raw = value
-        } else {
-            raw = -1
-        }
-        isBuffering = false
-        isPlaying = false
-        if raw == 1 {
-            errorMessage = "播放失败：格式不支持或文件损坏"
-        } else if raw == 0 {
+            isBuffering = false
             updateDuration()
             position = 1
             timeText = durationText
+        case .error:
+            isPlaying = false
+            isBuffering = false
+            errorMessage = "播放失败：格式不支持或文件损坏"
         }
     }
 
-    private func tick() {
-        guard !isStopped, !isSeeking else { return }
-        let playing = player.isPlaying()
-        if playing != isPlaying {
-            isPlaying = playing
+    func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
+        guard !isStopped else { return }
+        if totalTime.isFinite, totalTime > 0, totalTime != durationSeconds {
+            durationSeconds = totalTime
+            durationText = Self.formatTime(totalTime)
         }
-        if playing, player.loadState.rawValue & 4 == 0 {
-            isBuffering = false
-        }
-
-        updateDuration()
-
-        let current = player.currentPlaybackTime
-        guard current.isFinite else { return }
-        let clamped = max(0, current)
+        guard !isSeeking, currentTime.isFinite else { return }
+        let clamped = max(0, currentTime)
         timeText = Self.formatTime(clamped)
         if durationSeconds > 0 {
             position = min(max(clamped / durationSeconds, 0), 1)
         }
     }
 
+    func player(layer: KSPlayerLayer, finish error: Error?) {
+        guard !isStopped else { return }
+        isPlaying = false
+        isBuffering = false
+        if error != nil {
+            errorMessage = "播放失败：格式不支持或文件损坏"
+        } else {
+            updateDuration()
+            position = 1
+            timeText = durationText
+        }
+    }
+
+    func player(layer: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {
+        _ = layer
+        _ = bufferedCount
+        _ = consumeTime
+    }
+
     private func updateDuration() {
-        let duration = player.duration
+        let duration = playerLayer.player.duration
         guard duration.isFinite, duration > 0 else { return }
         durationSeconds = duration
         durationText = Self.formatTime(duration)

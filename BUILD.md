@@ -135,8 +135,11 @@ git push origin v1.0.0
 ```bash
 brew install xcodegen
 xcodegen generate
+xcodebuild -resolvePackageDependencies -project VideoSniffer.xcodeproj -scheme VideoSniffer
 open VideoSniffer.xcodeproj
 ```
+
+播放内核使用 **SPM 依赖** KSPlayer（`KSPlayer 2.3.4` + `FFmpegKit 6.1.4`），首次打开工程需等待 Xcode 拉取依赖。
 
 选择开发者团队自动签名即可运行。扩展调试：Safari → 设置 → Safari → 扩展 → 启用「视频嗅探」。
 

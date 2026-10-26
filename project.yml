@@ -5,6 +5,14 @@ options:
     iOS: "16.0"
   createIntermediateGroups: true
 
+packages:
+  KSPlayer:
+    url: https://github.com/kingslay/KSPlayer.git
+    exactVersion: 2.3.4
+  FFmpegKit:
+    url: https://github.com/kingslay/FFmpegKit.git
+    exactVersion: 6.1.4
+
 settings:
   base:
     MARKETING_VERSION: 1.0.0
@@ -38,6 +46,8 @@ targets:
     dependencies:
       - target: VideoSnifferExtension
         embed: true
+      - package: KSPlayer
+        product: KSPlayer
 
   VideoSnifferExtension:
     type: app-extension
