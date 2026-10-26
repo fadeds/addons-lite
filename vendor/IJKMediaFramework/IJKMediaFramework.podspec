@@ -12,6 +12,6 @@ Pod::Spec.new do |s|
   s.static_framework = true
   s.vendored_frameworks = 'IJKMediaFramework.framework'
 
-  s.frameworks = 'AVFoundation', 'AVFAudio', 'AVKit', 'AudioToolbox', 'AudioUnit', 'AssetsLibrary', 'CFNetwork', 'CoreAudio', 'CoreGraphics', 'CoreMedia', 'CoreMotion', 'CoreTelephony', 'CoreText', 'CoreVideo', 'Foundation', 'GLKit', 'ImageIO', 'MediaPlayer', 'MobileCoreServices', 'NetworkExtension', 'OpenGLES', 'QuartzCore', 'Security', 'SystemConfiguration', 'UIKit', 'VideoToolbox', 'WebKit'
+  s.frameworks = 'AVFoundation', 'AVFAudio', 'AVKit', 'AudioToolbox', 'AssetsLibrary', 'CFNetwork', 'CoreAudio', 'CoreGraphics', 'CoreMedia', 'CoreMotion', 'CoreTelephony', 'CoreText', 'CoreVideo', 'Foundation', 'GLKit', 'ImageIO', 'MediaPlayer', 'MobileCoreServices', 'NetworkExtension', 'OpenGLES', 'QuartzCore', 'Security', 'SystemConfiguration', 'UIKit', 'VideoToolbox', 'WebKit'
   s.libraries = 'bz2', 'z', 'c++'
 end
