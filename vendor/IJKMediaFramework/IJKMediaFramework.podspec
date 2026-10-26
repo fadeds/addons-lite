@@ -7,6 +7,7 @@ Pod::Spec.new do |s|
   s.license = { :type => 'LGPL', :text => 'IJKPlayer 为 LGPL 许可。' }
   s.author = 'bilibili'
   s.platform = :ios, '16.0'
+  s.source = { :http => 'https://github.com/fadeds/addons-lite/archive/refs/heads/master.zip' }
 
   s.static_framework = true
   s.vendored_frameworks = 'IJKMediaFramework.framework'
