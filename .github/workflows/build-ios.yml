@@ -126,16 +126,10 @@ jobs:
           pod install 2>&1 | tee "$RUNNER_TEMP/pod.log"
           STATUS=${PIPESTATUS[0]}
           if [ "$STATUS" -ne 0 ]; then
-            echo "Pod 安装失败，提取错误："
-            ERRORS=$(grep -aE "error:|\[!\]|Unable to find|failed|fatal" "$RUNNER_TEMP/pod.log" | head -n 40)
-            if [ -z "$ERRORS" ]; then
-              ERRORS=$(tail -n 80 "$RUNNER_TEMP/pod.log")
-            fi
-            printf '%s\n' "$ERRORS" | while IFS= read -r line; do
+            echo "::error::pod install 失败 exit=$STATUS，完整日志如下"
+            head -n 120 "$RUNNER_TEMP/pod.log" | while IFS= read -r line; do
               echo "::error::$line"
             done
-            echo "---------- pod.log 全量日志 ----------"
-            cat "$RUNNER_TEMP/pod.log"
             exit "$STATUS"
           fi
 
