@@ -315,10 +315,12 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private func persist() {
         lastPersist = Date()
-        // 编码 + 原子写放到串行后台队列：任务多时主线程全量重写会直接掉帧
+        // 编码 + 原子写放到串行后台队列：任务多时主线程全量重写会直接掉帧。
+        // 文件名先取出来，避免在非隔离闭包里访问 MainActor 隔离的静态属性。
         let snapshot = tasks
+        let fileName = DownloadManager.tasksFile
         persistQueue.async {
-            Storage.save(snapshot, to: DownloadManager.tasksFile)
+            Storage.save(snapshot, to: fileName)
         }
     }
 

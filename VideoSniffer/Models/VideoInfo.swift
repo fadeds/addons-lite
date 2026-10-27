@@ -72,8 +72,8 @@ struct VideoInfo: Identifiable, Codable, Hashable {
     var isHLS: Bool { matchedExtension == "m3u8" }
 
     var kind: VideoKind {
-        // matchedExtension 是 String?，字符串 case 命中 .some 分支，需要 default 兜住 .some(其它值)
-        switch matchedExtension {
+        // 用非可选字符串 switch，避免 Optional 模式匹配的穷尽性问题
+        switch matchedExtension ?? "" {
         case "m3u8": return .hls
         case "mp4", "m4v", "mov": return .mp4
         case "flv": return .flv
