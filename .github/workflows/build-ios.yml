@@ -105,7 +105,7 @@ jobs:
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" 2>&1 | tee "$RUNNER_TEMP/spm.log"
           STATUS=${PIPESTATUS[0]}
           if [ "$STATUS" -ne 0 ]; then
-            echo "::error::SPM 解析失败 exit=$STATUS，完整日志如下"
+            echo "::error::SPM 解析失败 exit=${STATUS}，完整日志如下"
             tail -n 120 "$RUNNER_TEMP/spm.log" | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -417,7 +417,7 @@ jobs:
               --generate-notes \
               --latest
           fi
-          echo "已发布 $TAG（$TITLE）"
+          echo "已发布 ${TAG} (${TITLE})"
 
       - name: 清理钥匙串
         if: always()
