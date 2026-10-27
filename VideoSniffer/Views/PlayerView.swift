@@ -43,6 +43,7 @@ struct PlayerView: View {
 
             ZStack(alignment: .top) {
                 Color.black
+                    .zIndex(0)
 
                 // 渲染层必须是全树唯一实例。
                 // 一旦按 mode 拆成两棵子树，切全屏时 SwiftUI 会销毁旧容器、
@@ -52,22 +53,52 @@ struct PlayerView: View {
                     .padding(.top, topH)
                     .allowsHitTesting(false)
                     .clipped()
+                    .zIndex(1)
 
                 interactionLayer(size: videoSize)
                     .frame(width: geo.size.width, height: videoH)
                     .padding(.top, topH)
+                    .zIndex(2)
 
                 statusOverlay
                     .frame(width: geo.size.width, height: videoH)
                     .padding(.top, topH)
+                    .allowsHitTesting(false)
+                    .zIndex(3)
 
                 if let content = hud.content {
                     hudView(content)
                         .frame(width: geo.size.width, height: videoH)
                         .padding(.top, topH)
+                        .zIndex(4)
                 }
 
-                controls
+                // 控制层：全屏拆成"顶部半区 / 底部半区"两个独立层，
+                // 都压在 zIndex(10) 上。之前是一个撑满全屏的 VStack，
+                // 配合下层手势层会把按钮点击吞掉。
+                if isFull {
+                    VStack(spacing: 0) {
+                        fullTopBar
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .zIndex(10)
+
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        fullBottomBar
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .zIndex(10)
+                } else {
+                    VStack(spacing: 0) {
+                        compactTopBar
+                        Spacer(minLength: 0)
+                        compactBottomBar
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .zIndex(10)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipShape(
@@ -83,7 +114,6 @@ struct PlayerView: View {
         }
         .background(Color.black)
         .statusBarHidden(isFull)
-        .persistentSystemOverlays(isFull ? .hidden : .automatic)
         .onAppear(perform: handleAppear)
         .onDisappear(perform: handleDisappear)
         .onChange(of: appState.playerMode) { mode in
@@ -96,26 +126,6 @@ struct PlayerView: View {
     }
 
     // MARK: - 布局
-
-    /// 控制条常显：全屏时也要一直能看到"小窗"按钮，
-    /// 之前跟随点击自动隐藏，用户找不到退出全屏的入口，会被当成"缩不回去"。
-    private var controls: some View {
-        VStack(spacing: 0) {
-            if isFull {
-                fullTopBar
-            } else {
-                compactTopBar
-            }
-
-            Spacer(minLength: 0)
-
-            if isFull {
-                fullBottomBar
-            } else {
-                compactBottomBar
-            }
-        }
-    }
 
     /// 视频区手势层
     private func interactionLayer(size: CGSize) -> some View {
@@ -514,39 +524,43 @@ struct WindowDragModifier: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        // 非小窗模式必须把偏移归零，否则拖过位置后再切全屏会带着偏移跑偏
-        let live = enabled
-            ? clamp(
-                CGSize(
-                    width: offset.width + translation.width,
-                    height: offset.height + translation.height
-                )
-            )
-            : .zero
-        content
-            .offset(x: live.width, y: live.height)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 6)
-                    .updating($translation) { value, state, _ in
-                        guard enabled else { return }
-                        state = value.translation
-                    }
-                    .onEnded { value in
-                        guard enabled else { return }
-                        // 纯点击不写状态：否则点一下顶栏就会触发父视图重算，
-                        // 白白带来一次整树布局（真机上表现为"点一下就卡"）。
-                        let dx = value.translation.width
-                        let dy = value.translation.height
-                        guard abs(dx) > 0.5 || abs(dy) > 0.5 else { return }
-                        offset = clamp(
-                            CGSize(
-                                width: offset.width + dx,
-                                height: offset.height + dy
+        // 全屏时完全不附加手势。
+        // 用 `including: .none` 只是把手势标记为不生效，SwiftUI 仍会为它建立
+        // 手势宿主，和内部按钮抢触摸 —— 这是全屏按钮点不动的直接原因。
+        if enabled {
+            content
+                .offset(x: liveOffset.width, y: liveOffset.height)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 6)
+                        .updating($translation) { value, state, _ in
+                            state = value.translation
+                        }
+                        .onEnded { value in
+                            // 纯点击不写状态：否则点一下顶栏就会触发父视图重算，
+                            // 白白带来一次整树布局（真机上表现为"点一下就卡"）。
+                            let dx = value.translation.width
+                            let dy = value.translation.height
+                            guard abs(dx) > 0.5 || abs(dy) > 0.5 else { return }
+                            offset = clamp(
+                                CGSize(
+                                    width: offset.width + dx,
+                                    height: offset.height + dy
+                                )
                             )
-                        )
-                    },
-                including: enabled ? .all : .none
+                        }
+                )
+        } else {
+            content
+        }
+    }
+
+    private var liveOffset: CGSize {
+        clamp(
+            CGSize(
+                width: offset.width + translation.width,
+                height: offset.height + translation.height
             )
+        )
     }
 }
 
