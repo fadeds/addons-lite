@@ -217,8 +217,9 @@ enum TSRemuxer {
         var sampleRate: Float64 = 44100
         var channels: UInt32 = 2
 
-        // 不能直接 as!：formatDescriptions 里可能是视频/字幕描述，强转即崩
-        if let desc = track.formatDescriptions.first,
+        // 不能直接 as!：formatDescriptions 里可能是视频/字幕描述，强转即崩。
+        // 元素类型是 Any，需先转成 CMFormatDescription 才能查 mediaType。
+        if let desc = track.formatDescriptions.first as? CMFormatDescription,
            CMFormatDescriptionGetMediaType(desc) == kCMMediaType_Audio,
            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee {
             if asbd.mSampleRate > 0 { sampleRate = asbd.mSampleRate }
