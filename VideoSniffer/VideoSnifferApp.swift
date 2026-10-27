@@ -6,7 +6,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
     ) -> UIInterfaceOrientationMask {
-        OrientationManager.shared.allowLandscape ? .allButUpsideDown : .portrait
+        OrientationManager.shared.allowed
     }
 }
 
