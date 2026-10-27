@@ -47,13 +47,15 @@ struct PlayerView: View {
         _model = StateObject(wrappedValue: KSPlayerModel(url: url, referer: referer))
     }
 
+    private var isFull: Bool { appState.playerMode == .full }
+    private var isMini: Bool { appState.playerMode == .mini }
+
     var body: some View {
         GeometryReader { geo in
-            let expanded = appState.playerExpanded
-            let barHeight: CGFloat = expanded ? 0 : 38
-            let videoHeight = expanded ? geo.size.height : max(geo.size.height - barHeight, 1)
+            let barHeight: CGFloat = isFull ? 0 : 38
+            let videoHeight = max(geo.size.height - barHeight, 1)
             let isLandscape = geo.size.width > geo.size.height
-            let horizontalPadding: CGFloat = expanded ? (isLandscape ? 48 : 20) : 10
+            let horizontalPadding: CGFloat = isFull ? (isLandscape ? 48 : 20) : 10
 
             ZStack(alignment: .top) {
                 Color.black
@@ -93,33 +95,33 @@ struct PlayerView: View {
                 }
 
                 VStack(spacing: 0) {
-                    if expanded {
+                    if isFull {
                         if showControls {
                             fullTopBar(horizontalPadding: horizontalPadding)
                         }
                     } else {
-                        miniTopBar
+                        compactTopBar
                     }
 
                     Spacer(minLength: 0)
 
                     if showControls {
-                        if expanded {
+                        if isFull {
                             fullBottomBar(horizontalPadding: horizontalPadding)
                         } else {
-                            miniBottomBar
+                            compactBottomBar
                         }
                     }
                 }
             }
             .clipShape(
                 RoundedRectangle(
-                    cornerRadius: expanded ? 0 : 14,
+                    cornerRadius: isFull ? 0 : 14,
                     style: .continuous
                 )
             )
             .overlay {
-                if !expanded {
+                if !isFull {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(.white.opacity(0.14), lineWidth: 1)
                         .allowsHitTesting(false)
@@ -128,24 +130,22 @@ struct PlayerView: View {
             .animation(.easeInOut(duration: 0.2), value: showControls)
         }
         .background(Color.black)
-        .statusBarHidden(appState.playerExpanded)
-        .persistentSystemOverlays(appState.playerExpanded ? .hidden : .automatic)
+        .statusBarHidden(isFull)
+        .persistentSystemOverlays(isFull ? .hidden : .automatic)
         .onAppear(perform: start)
         .onDisappear(perform: stop)
-        .onChange(of: appState.playerExpanded) { expanded in
-            if expanded {
-                OrientationManager.shared.allowLandscape = true
-                requestOrientation(.landscapeRight)
+        .onChange(of: appState.playerMode) { mode in
+            if mode == .full {
+                setLandscape(true)
             } else {
-                OrientationManager.shared.allowLandscape = false
-                requestOrientation(.portrait)
+                setLandscape(false)
             }
         }
     }
 
     // MARK: - 顶部栏
 
-    private var miniTopBar: some View {
+    private var compactTopBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "line.3.horizontal")
                 .font(.caption2.weight(.bold))
@@ -158,15 +158,39 @@ struct PlayerView: View {
 
             Spacer(minLength: 4)
 
-            Button {
-                windowOffset = .zero
-                showControls = true
-                appState.playerExpanded = true
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+            if isMini {
+                // 小窗 → 充满屏幕宽度
+                Button {
+                    windowOffset = .zero
+                    showControls = true
+                    appState.playerMode = .wide
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+            } else {
+                // 充满宽度 → 全屏横屏
+                Button {
+                    showControls = true
+                    appState.playerMode = .full
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+
+                // 充满宽度 → 回到小窗
+                Button {
+                    appState.playerMode = .mini
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
             }
 
             Button {
@@ -206,7 +230,7 @@ struct PlayerView: View {
 
             Button {
                 showControls = true
-                appState.playerExpanded = false
+                appState.playerMode = .mini
             } label: {
                 Text("小窗")
                     .font(.footnote.weight(.semibold))
@@ -230,7 +254,7 @@ struct PlayerView: View {
 
     // MARK: - 底部栏
 
-    private var miniBottomBar: some View {
+    private var compactBottomBar: some View {
         HStack(spacing: 8) {
             Button {
                 model.togglePlay()
@@ -422,6 +446,7 @@ struct PlayerView: View {
     private var windowDragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
             .onChanged { gesture in
+                guard isMini else { return }
                 if !isDraggingWindow {
                     isDraggingWindow = true
                     windowDragStart = windowOffset
@@ -488,14 +513,20 @@ struct PlayerView: View {
 
     private func start() {
         UIApplication.shared.isIdleTimerDisabled = true
-        OrientationManager.shared.allowLandscape = false
+        // 已经在全屏时不要在这里强制回竖屏，否则刚展开就被拉回
+        if appState.playerMode != .full, OrientationManager.shared.allowLandscape {
+            OrientationManager.shared.allowLandscape = false
+            requestOrientation(.portrait)
+        }
         model.startPlayback()
     }
 
     private func stop() {
         UIApplication.shared.isIdleTimerDisabled = false
-        OrientationManager.shared.allowLandscape = false
-        requestOrientation(.portrait)
+        if appState.playerMode != .full, OrientationManager.shared.allowLandscape {
+            OrientationManager.shared.allowLandscape = false
+            requestOrientation(.portrait)
+        }
         model.stop()
     }
 
@@ -510,7 +541,29 @@ struct PlayerView: View {
     }
 
     private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
-        activeWindowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
+        guard let scene = activeWindowScene else { return }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
+    }
+
+    /// 切换横竖屏。
+    /// requestGeometryUpdate 在场景未激活、刚展开布局未定、或用户开了方向锁时会被系统拒绝；
+    /// 不检查 completion 错误就表现为"点了全屏只放大、不横屏"，所以这里带重试。
+    private func setLandscape(_ landscape: Bool) {
+        OrientationManager.shared.allowLandscape = landscape
+        guard let scene = activeWindowScene else { return }
+        requestLandscape(landscape, on: scene, attempt: 0)
+    }
+
+    private func requestLandscape(_ landscape: Bool, on scene: UIWindowScene, attempt: Int) {
+        let mask: UIInterfaceOrientationMask = landscape ? .landscapeRight : .portrait
+        // 每次请求前重新确认：supportedInterfaceOrientationsFor 只在返回值允许时才真的旋转
+        OrientationManager.shared.allowLandscape = landscape
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
+            guard error != nil, attempt < 2 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2 * Double(attempt + 1)) {
+                self.requestLandscape(landscape, on: scene, attempt: attempt + 1)
+            }
+        }
     }
 
     private var activeWindowScene: UIWindowScene? {
@@ -609,6 +662,8 @@ final class KSPlayerModel: NSObject, ObservableObject, KSPlayerLayerDelegate {
     private var didConfigureAudio = false
     private var isStopped = false
     private var isSeeking = false
+    private var seekToken = 0
+    private var bufferingWatchToken = 0
 
     init(url: URL, referer: String?) {
         let options = KSOptions()
@@ -629,6 +684,8 @@ final class KSPlayerModel: NSObject, ObservableObject, KSPlayerLayerDelegate {
         didStartPlayback = true
         isBuffering = true
         play()
+        // 兜底：状态回调丢失时不要让用户一直看 loading
+        armBufferingWatch(seconds: 20)
     }
 
     func togglePlay() {
@@ -650,15 +707,45 @@ final class KSPlayerModel: NSObject, ObservableObject, KSPlayerLayerDelegate {
         let clamped = min(max(value, 0), 1)
         let target = clamped * durationSeconds
         isSeeking = true
+        isBuffering = false
         position = clamped
         timeText = Self.formatTime(target)
-        if isPlaying {
-            isBuffering = true
-        }
-        playerLayer.seek(time: target, autoPlay: playerLayer.state.isPlaying) { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                self?.isSeeking = false
+
+        // 注意：seek 期间不要显示 loading。
+        // KSPlayer 在 player.seekable == false 时只把目标时间存起来并回调 false，
+        // 不会再发 .bufferFinished 状态，一旦显示 loading 就会永远卡住。
+        seekToken += 1
+        let token = seekToken
+        playerLayer.seek(time: target, autoPlay: playerLayer.state.isPlaying) { [weak self] success in
+            DispatchQueue.main.async {
+                guard let self, self.seekToken == token, !self.isStopped else { return }
+                self.finishSeek(success: success)
             }
+        }
+        // 回调可能不触发（播放器未就绪等），超时兜底
+        armBufferingWatch(seconds: 3)
+    }
+
+    private func finishSeek(success: Bool) {
+        isSeeking = false
+        isBuffering = false
+        errorMessage = nil
+        updateDuration()
+        if success || playerLayer.state.isPlaying {
+            isPlaying = true
+        }
+    }
+
+    /// loading 兜底：状态回调丢失时，到期后强制收掉 loading
+    private func armBufferingWatch(seconds: TimeInterval) {
+        bufferingWatchToken += 1
+        let token = bufferingWatchToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.bufferingWatchToken == token, !self.isStopped else { return }
+            guard self.isBuffering else { return }
+            self.isBuffering = false
+            self.isSeeking = false
+            self.isPlaying = true
         }
     }
 

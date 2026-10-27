@@ -53,15 +53,32 @@ struct VideoInfo: Identifiable, Codable, Hashable {
 
     var host: String { parsedURL?.host ?? url }
 
-    var isHLS: Bool { url.lowercased().contains("m3u8") }
+    /// 与 Safari 扩展保持一致的直链判定：后缀后必须是 ? # 或结尾，
+    /// 避免把 m3u8player / .mp4x 这类路径误判成视频地址
+    private static let mediaExtensions = ["m3u8", "mp4", "m4v", "mov", "flv", "webm"]
+
+    private var matchedExtension: String? {
+        let lower = url.lowercased()
+        for ext in Self.mediaExtensions {
+            let needle = "." + ext
+            guard let range = lower.range(of: needle) else { continue }
+            let after = lower.index(after: range.upperBound)
+            guard after < lower.endIndex else { return ext }
+            if lower[after] == "?" || lower[after] == "#" { return ext }
+        }
+        return nil
+    }
+
+    var isHLS: Bool { matchedExtension == "m3u8" }
 
     var kind: VideoKind {
-        guard !isHLS else { return .hls }
-        let u = url.lowercased()
-        if u.contains(".mp4") { return .mp4 }
-        if u.contains(".flv") { return .flv }
-        if u.contains(".webm") { return .webm }
-        return .other
+        switch matchedExtension {
+        case "m3u8": return .hls
+        case "mp4", "m4v", "mov": return .mp4
+        case "flv": return .flv
+        case "webm": return .webm
+        case nil: return .other
+        }
     }
 
     var displayTitle: String {

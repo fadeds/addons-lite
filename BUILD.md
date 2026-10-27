@@ -161,7 +161,8 @@ open VideoSniffer.xcodeproj
 
 - `blob:` 地址视频、加密 SAMPLE-AES、DASH（`.mpd`）不支持
 - 直播流仅下载当前列出的分片
-- HLS 下载在 App 退后台后受系统限时保护（mp4 直链走后台会话可继续）
+- 直链（mp4 等）下载使用前台会话：临时文件落在 App 沙盒内，规避 TrollStore/侧载环境下后台会话临时文件（nsurlsessiond）无访问权限的问题
+- HLS 下载使用临时会话，App 退后台后受系统限时保护
 - 后缀识别：`.m3u8 .mp4 .m4v .mov .flv .webm`
 
 ## 十一、目录速查
@@ -170,9 +171,12 @@ open VideoSniffer.xcodeproj
 project.yml                              XcodeGen 工程定义（双 target）
 .github/workflows/build-ios.yml          云构建流水线（自动签名/无签名）
 VideoSniffer/                            主 App 源码
+  Models/                                VideoInfo / DownloadTaskRecord
+  URLScheme/                             videosniffer:// 深链解析
   Download/                              M3U8 解析 / AES / 转封装 / 任务管理
   Update/                                检查更新 / TrollStore 与 itms-services 升级
-  Views/                                 四个 Tab 页面
+  Views/                                 四个 Tab 页面 + KSPlayer 播放器
+  Support/                               存储 / 横竖屏 / 系统音量
 VideoSnifferExtension/
   Extension/                             manifest.json / background / content / popup
 ```
