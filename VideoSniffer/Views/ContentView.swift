@@ -69,15 +69,6 @@ private struct PlayerHost: View {
             let limit = PlayerLayout.dragLimit(mode: mode, container: geo.size, window: size)
 
             ZStack(alignment: .top) {
-                // 宽窗模式：点空白处收回小窗
-                if mode == .wide {
-                    Color.black
-                        .opacity(0.4)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .contentShape(Rectangle())
-                        .onTapGesture { appState.playerMode = .mini }
-                }
-
                 PlayerView(url: url)
                     .frame(width: size.width, height: size.height)
                     .modifier(

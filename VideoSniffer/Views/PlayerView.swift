@@ -16,7 +16,6 @@ struct PlayerView: View {
     @StateObject private var model: PlayerModel
     @StateObject private var hud = HUDCenter()
 
-    @State private var showControls = true
     @State private var scrubProgress: Double?
 
     @State private var dragMode: DragMode = .none
@@ -32,7 +31,6 @@ struct PlayerView: View {
     }
 
     private var isFull: Bool { appState.playerMode == .full }
-    private var isMini: Bool { appState.playerMode == .mini }
 
     // MARK: - Body
 
@@ -99,14 +97,12 @@ struct PlayerView: View {
 
     // MARK: - 布局
 
-    /// 控制条：小窗常显，全屏跟随 showControls
+    /// 控制条常显：全屏时也要一直能看到"小窗"按钮，
+    /// 之前跟随点击自动隐藏，用户找不到退出全屏的入口，会被当成"缩不回去"。
     private var controls: some View {
         VStack(spacing: 0) {
             if isFull {
-                if showControls {
-                    fullTopBar
-                        .transition(.opacity)
-                }
+                fullTopBar
             } else {
                 compactTopBar
             }
@@ -114,17 +110,11 @@ struct PlayerView: View {
             Spacer(minLength: 0)
 
             if isFull {
-                if showControls {
-                    fullBottomBar
-                        .transition(.opacity)
-                }
+                fullBottomBar
             } else {
                 compactBottomBar
             }
         }
-        // 动画只作用于控制条显隐，不能放到整个 ZStack 上，
-        // 否则进度条数值更新也会被动画化，拖动手感会飘
-        .animation(.easeInOut(duration: 0.2), value: showControls)
     }
 
     /// 视频区手势层
@@ -132,13 +122,7 @@ struct PlayerView: View {
         Color.clear
             .contentShape(Rectangle())
             .gesture(videoGesture(size: size))
-            .onTapGesture {
-                if isFull {
-                    withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
-                } else {
-                    model.togglePlay()
-                }
-            }
+            .onTapGesture { model.togglePlay() }
     }
 
     // MARK: - 顶栏
@@ -163,13 +147,7 @@ struct PlayerView: View {
             Spacer(minLength: 6)
 
             iconButton("arrow.up.left.and.arrow.down.right") {
-                appState.playerMode = isMini ? .wide : .full
-            }
-
-            if !isMini {
-                iconButton("arrow.down.right.and.arrow.up.left") {
-                    appState.playerMode = .mini
-                }
+                appState.playerMode = .full
             }
 
             iconButton("xmark") { close() }
@@ -208,8 +186,8 @@ struct PlayerView: View {
             }
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(.horizontal, 40)
+        .padding(.top, 10)
         .padding(.bottom, 16)
         .background(
             LinearGradient(
@@ -266,9 +244,9 @@ struct PlayerView: View {
                 speedMenu
             }
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 40)
         .padding(.top, 6)
-        .padding(.bottom, 12)
+        .padding(.bottom, 18)
         .background(
             LinearGradient(
                 colors: [.black.opacity(0), .black.opacity(0.72)],
@@ -499,10 +477,6 @@ enum PlayerLayout {
         switch mode {
         case .mini:
             let width = min(max(container.width - 80, 200), 288)
-            let video = (width * 9 / 16).rounded()
-            return CGSize(width: width, height: video + topBar + bottomBar)
-        case .wide:
-            let width = max(container.width - 16, 200)
             let video = (width * 9 / 16).rounded()
             return CGSize(width: width, height: video + topBar + bottomBar)
         case .full:

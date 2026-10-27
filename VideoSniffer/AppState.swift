@@ -3,11 +3,9 @@ import UIKit
 
 /// 播放器窗口形态
 /// - mini: 可拖动的浮窗
-/// - wide: 充满屏幕宽度（仍为竖屏）
 /// - full: 全屏横屏
 enum PlayerMode: Equatable {
     case mini
-    case wide
     case full
 }
 
@@ -28,9 +26,20 @@ final class AppState: ObservableObject {
     let updateChecker = UpdateChecker()
 
     private var toastTask: Task<Void, Never>?
+    private var rotationObserver: NSObjectProtocol?
 
     init() {
         pendingVideos = Storage.load([VideoInfo].self, from: AppState.pendingFile) ?? []
+        // 旋转彻底失败时给用户一个可执行的提示，否则只会看到"全屏了但不横"
+        rotationObserver = NotificationCenter.default.addObserver(
+            forName: OrientationManager.rotationFailed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.showToast("如需横屏，请关闭控制中心的竖排方向锁定")
+            }
+        }
     }
 
     func onLaunch() async {
