@@ -25,22 +25,23 @@ struct PlayerSurface: UIViewRepresentable {
 }
 
 final class PlayerSurfaceContainer: UIView {
-    private weak var mounted: UIView?
-
     func attach(_ surface: UIView?) {
-        guard let surface, mounted !== surface else { return }
-        mounted?.removeFromSuperview()
+        guard let surface else { return }
+        // 已经挂在本容器里就绝不再动它。
+        // 反复 remove/add 会让 KSPlayer 的渲染层重新绑定，表现为画面冻结。
+        if surface.superview === self { return }
+
+        surface.removeFromSuperview()
         surface.backgroundColor = .black
         surface.isUserInteractionEnabled = false
         surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         surface.frame = bounds
         addSubview(surface)
-        mounted = surface
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let mounted, mounted.frame != bounds else { return }
+        guard let mounted = subviews.first, mounted.frame != bounds else { return }
         mounted.frame = bounds
     }
 }

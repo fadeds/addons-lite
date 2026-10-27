@@ -38,10 +38,49 @@ struct PlayerView: View {
 
     var body: some View {
         GeometryReader { geo in
-            if isFull {
-                fullLayout(size: geo.size)
-            } else {
-                compactLayout(size: geo.size)
+            let topH = isFull ? 0 : PlayerLayout.topBar
+            let botH = isFull ? 0 : PlayerLayout.bottomBar
+            let videoH = max(geo.size.height - topH - botH, 1)
+            let videoSize = CGSize(width: geo.size.width, height: videoH)
+
+            ZStack(alignment: .top) {
+                Color.black
+
+                // 渲染层必须是全树唯一实例。
+                // 一旦按 mode 拆成两棵子树，切全屏时 SwiftUI 会销毁旧容器、
+                // 把 KSPlayer 的 UIView 搬到新容器，画面立刻冻结（音频还在跑）。
+                PlayerSurface(player: model.layer)
+                    .frame(width: geo.size.width, height: videoH)
+                    .padding(.top, topH)
+                    .allowsHitTesting(false)
+                    .clipped()
+
+                interactionLayer(size: videoSize)
+                    .frame(width: geo.size.width, height: videoH)
+                    .padding(.top, topH)
+
+                statusOverlay
+                    .frame(width: geo.size.width, height: videoH)
+                    .padding(.top, topH)
+
+                if let content = hud.content {
+                    hudView(content)
+                        .frame(width: geo.size.width, height: videoH)
+                        .padding(.top, topH)
+                }
+
+                controls
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipShape(
+                RoundedRectangle(cornerRadius: isFull ? 0 : 12, style: .continuous)
+            )
+            .overlay {
+                if !isFull {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
             }
         }
         .background(Color.black)
@@ -60,68 +99,45 @@ struct PlayerView: View {
 
     // MARK: - 布局
 
-    private func compactLayout(size: CGSize) -> some View {
+    /// 控制条：小窗常显，全屏跟随 showControls
+    private var controls: some View {
         VStack(spacing: 0) {
-            compactTopBar
-            videoArea
-            compactBottomBar
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
-                .allowsHitTesting(false)
-        }
-    }
-
-    private func fullLayout(size: CGSize) -> some View {
-        ZStack {
-            Color.black
-            PlayerSurface(player: model.layer)
-                .allowsHitTesting(false)
-            videoInteractionLayer(size: size)
-            statusOverlay
-            if let content = hud.content {
-                hudView(content)
-            }
-            VStack(spacing: 0) {
+            if isFull {
                 if showControls {
                     fullTopBar
                         .transition(.opacity)
                 }
-                Spacer(minLength: 0)
+            } else {
+                compactTopBar
+            }
+
+            Spacer(minLength: 0)
+
+            if isFull {
                 if showControls {
                     fullBottomBar
                         .transition(.opacity)
                 }
+            } else {
+                compactBottomBar
             }
         }
+        // 动画只作用于控制条显隐，不能放到整个 ZStack 上，
+        // 否则进度条数值更新也会被动画化，拖动手感会飘
         .animation(.easeInOut(duration: 0.2), value: showControls)
     }
 
-    private var videoArea: some View {
-        ZStack {
-            Color.black
-            PlayerSurface(player: model.layer)
-                .allowsHitTesting(false)
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { model.togglePlay() }
-            statusOverlay
-            if let content = hud.content {
-                hudView(content)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-    }
-
-    private func videoInteractionLayer(size: CGSize) -> some View {
+    /// 视频区手势层
+    private func interactionLayer(size: CGSize) -> some View {
         Color.clear
             .contentShape(Rectangle())
             .gesture(videoGesture(size: size))
             .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+                if isFull {
+                    withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+                } else {
+                    model.togglePlay()
+                }
             }
     }
 
@@ -129,9 +145,15 @@ struct PlayerView: View {
 
     private var compactTopBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.45))
+            // 原来是纯装饰的三横杠，点了没反应容易被当成"卡死"。
+            // 换成播放/暂停，点击立即有反馈；顶栏其余区域仍可拖动窗口。
+            Button { model.togglePlay() } label: {
+                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
 
             Text(displayName)
                 .font(.system(size: 11))
@@ -362,6 +384,9 @@ struct PlayerView: View {
     private func videoGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
             .onChanged { value in
+                // 小窗里视频区拖动等于移动窗口（由 WindowDragModifier 处理），
+                // 这里必须完全不参与，否则 seek 和移动会同时生效
+                guard isFull else { return }
                 if dragMode == .none {
                     let dx = value.translation.width
                     let dy = value.translation.height
@@ -421,6 +446,7 @@ struct PlayerView: View {
                 }
             }
             .onEnded { _ in
+                guard isFull else { return }
                 if dragMode == .seek {
                     model.seek(to: seekTarget)
                 }
@@ -533,10 +559,15 @@ struct WindowDragModifier: ViewModifier {
                     }
                     .onEnded { value in
                         guard enabled else { return }
+                        // 纯点击不写状态：否则点一下顶栏就会触发父视图重算，
+                        // 白白带来一次整树布局（真机上表现为"点一下就卡"）。
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        guard abs(dx) > 0.5 || abs(dy) > 0.5 else { return }
                         offset = clamp(
                             CGSize(
-                                width: offset.width + value.translation.width,
-                                height: offset.height + value.translation.height
+                                width: offset.width + dx,
+                                height: offset.height + dy
                             )
                         )
                     },
