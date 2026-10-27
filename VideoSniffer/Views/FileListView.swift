@@ -8,7 +8,7 @@ struct FileListView: View {
     @State private var alertMessage: String?
     @State private var showPhotoAlert = false
 
-    struct FileInfo: Identifiable {
+    struct FileInfo: Identifiable, Sendable {
         let url: URL
         let name: String
         let size: Int64
@@ -106,6 +106,16 @@ struct FileListView: View {
     }
 
     private func reload() {
+        // 目录枚举 + resourceValues 是磁盘 IO，放到后台避免 onAppear 卡顿
+        Task { @MainActor in
+            let list = await Task.detached(priority: .userInitiated) {
+                Self.loadFiles()
+            }.value
+            files = list
+        }
+    }
+
+    private static func loadFiles() -> [FileInfo] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.creationDateKey, .fileSizeKey, .isDirectoryKey]
         guard let urls = try? fm.contentsOfDirectory(
@@ -113,11 +123,10 @@ struct FileListView: View {
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
         ) else {
-            files = []
-            return
+            return []
         }
 
-        files = urls
+        return urls
             .filter { url in
                 let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
                 return values?.isDirectory != true

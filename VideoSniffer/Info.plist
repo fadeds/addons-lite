@@ -45,6 +45,8 @@
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!-- 视频源站大量是明文 HTTP，必须放开；补偿措施在代码层：
+		     更新链路（ManifestInstaller.isTrustedUpdateURL）强制 https + 域名白名单 -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>

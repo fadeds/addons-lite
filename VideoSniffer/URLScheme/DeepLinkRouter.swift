@@ -23,12 +23,17 @@ enum DeepLinkRouter {
 
         switch host {
         case "add", "download":
-            guard let videoURL = value("url") ?? value("u"),
-                  !videoURL.isEmpty,
-                  URL(string: videoURL) != nil
+            // 深链来自任意 App / 任意网页，必须锁死 http(s)。
+            // 否则 file:// 之类会被直接塞进下载队列，落地文件还能通过「文件」App 取走。
+            guard let raw = value("url") ?? value("u"),
+                  let videoURL = URL(string: raw),
+                  let videoScheme = videoURL.scheme?.lowercased(),
+                  videoScheme == "http" || videoScheme == "https",
+                  let videoHost = videoURL.host,
+                  !videoHost.isEmpty
             else { return nil }
             let video = VideoInfo(
-                url: videoURL,
+                url: raw,
                 referer: value("referer") ?? value("page"),
                 pageTitle: value("title"),
                 source: .deeplink

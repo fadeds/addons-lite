@@ -5,6 +5,7 @@ enum AESCryptorError: Error, LocalizedError {
     case invalidKeyLength
     case invalidIVLength
     case invalidIVHex
+    case invalidBlockLength(Int)
     case decryptionFailed
 
     var errorDescription: String? {
@@ -12,6 +13,8 @@ enum AESCryptorError: Error, LocalizedError {
         case .invalidKeyLength: return "AES 密钥长度无效（需要 16 字节）"
         case .invalidIVLength: return "AES IV 长度无效（需要 16 字节）"
         case .invalidIVHex: return "AES IV 十六进制格式无效"
+        case .invalidBlockLength(let count):
+            return "分片长度 \(count) 不是 16 的整数倍（数据可能被截断）"
         case .decryptionFailed: return "AES-128 解密失败（数据可能已损坏）"
         }
     }
@@ -22,6 +25,10 @@ enum AESCryptor {
     static func decrypt(_ data: Data, key: Data, iv: Data) throws -> Data {
         guard key.count == kCCKeySizeAES128 else { throw AESCryptorError.invalidKeyLength }
         guard iv.count == kCCBlockSizeAES128 else { throw AESCryptorError.invalidIVLength }
+        // 截断/空分片进 CCCrypt 只会得到 kCCDecodeError，错误信息丢失分片线索
+        guard data.count > 0, data.count % kCCBlockSizeAES128 == 0 else {
+            throw AESCryptorError.invalidBlockLength(data.count)
+        }
 
         let outCapacity = data.count + kCCBlockSizeAES128
         var outBytes = [UInt8](repeating: 0, count: outCapacity)

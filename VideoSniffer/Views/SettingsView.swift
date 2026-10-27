@@ -67,33 +67,43 @@ struct SettingsView: View {
     // MARK: - 操作
 
     private func refreshSize() {
-        downloadsSize = Storage.directorySize(Storage.downloadsURL)
+        // 下载目录可能有几十 GB / 上百文件，全量枚举不能放主线程
+        Task { @MainActor in
+            let size = await Task.detached(priority: .utility) {
+                Storage.directorySize(Storage.downloadsURL)
+            }.value
+            downloadsSize = size
+        }
     }
 
     private func clearTemporary() {
-        let fm = FileManager.default
+        Task { @MainActor in
+            await Task.detached(priority: .userInitiated) {
+                let fm = FileManager.default
 
-        // 1. .tmp 目录
-        if let items = try? fm.contentsOfDirectory(
-            at: Storage.tmpURL,
-            includingPropertiesForKeys: nil
-        ) {
-            for item in items {
-                try? fm.removeItem(at: item)
-            }
+                // 1. .tmp 目录
+                if let items = try? fm.contentsOfDirectory(
+                    at: Storage.tmpURL,
+                    includingPropertiesForKeys: nil
+                ) {
+                    for item in items {
+                        try? fm.removeItem(at: item)
+                    }
+                }
+
+                // 2. 下载目录中的隐藏临时分片目录（异常退出残留）
+                if let items = try? fm.contentsOfDirectory(
+                    at: Storage.downloadsURL,
+                    includingPropertiesForKeys: nil
+                ) {
+                    for item in items where item.lastPathComponent.hasPrefix(".") {
+                        try? fm.removeItem(at: item)
+                    }
+                }
+            }.value
+
+            refreshSize()
+            appState.showToast("临时文件已清理")
         }
-
-        // 2. 下载目录中的隐藏临时分片目录（异常退出残留）
-        if let items = try? fm.contentsOfDirectory(
-            at: Storage.downloadsURL,
-            includingPropertiesForKeys: nil
-        ) {
-            for item in items where item.lastPathComponent.hasPrefix(".") {
-                try? fm.removeItem(at: item)
-            }
-        }
-
-        refreshSize()
-        appState.showToast("临时文件已清理")
     }
 }

@@ -381,7 +381,9 @@ jobs:
           if-no-files-found: error
 
       - name: 发布到 GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+        # 只在打 tag 时发布：master 的每次 push 都产出可被 App 内 OTA 拉取的 release
+        # 等于把未验证的构建直接推给用户，这里收紧为仅 tag 触发
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}

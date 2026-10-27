@@ -22,6 +22,7 @@ struct UpdateSection: View {
 
             Toggle("通过 TrollStore 安装更新", isOn: $useTrollStore)
 
+            #if DEBUG
             if !checker.isRepoConfigured || !repoOverride.isEmpty {
                 TextField("更新仓库 (owner/repo)", text: $repoOverride)
                     .textInputAutocapitalization(.never)
@@ -29,6 +30,7 @@ struct UpdateSection: View {
                     .keyboardType(.URL)
                     .font(.footnote)
             }
+            #endif
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {

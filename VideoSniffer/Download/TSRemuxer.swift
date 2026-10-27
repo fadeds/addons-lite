@@ -90,8 +90,14 @@ enum TSRemuxer {
                         let transformed = track.naturalSize.applying(track.preferredTransform)
                         let width = evenDimension(abs(transformed.width))
                         let height = evenDimension(abs(transformed.height))
+                        // 按源码率给目标码率（夹在 1.2~4 Mbps）。
+                        // 原来 width*height*4 对 1080p 是 8.3 Mbps，文件膨胀 3~5 倍且编码慢得多。
+                        let sourceRate = Double(track.estimatedDataRate)
+                        let targetRate = sourceRate > 0
+                            ? Int(min(max(sourceRate, 1_200_000), 4_000_000))
+                            : 2_500_000
                         let compression: [String: Any] = [
-                            AVVideoAverageBitRateKey: max(width * height * 4, 2_500_000),
+                            AVVideoAverageBitRateKey: targetRate,
                             AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
                         ]
                         let videoSettings: [String: Any] = [
@@ -211,12 +217,12 @@ enum TSRemuxer {
         var sampleRate: Float64 = 44100
         var channels: UInt32 = 2
 
-        if let desc = track.formatDescriptions.first {
-            let formatDesc = desc as! CMAudioFormatDescription
-            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee {
-                if asbd.mSampleRate > 0 { sampleRate = asbd.mSampleRate }
-                if asbd.mChannelsPerFrame > 0 { channels = asbd.mChannelsPerFrame }
-            }
+        // 不能直接 as!：formatDescriptions 里可能是视频/字幕描述，强转即崩
+        if let desc = track.formatDescriptions.first,
+           CMFormatDescriptionGetMediaType(desc) == kCMMediaType_Audio,
+           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee {
+            if asbd.mSampleRate > 0 { sampleRate = asbd.mSampleRate }
+            if asbd.mChannelsPerFrame > 0 { channels = asbd.mChannelsPerFrame }
         }
 
         return [

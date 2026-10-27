@@ -25,3 +25,7 @@ xcuserdata/
 exportOptions.plist
 *.p12
 *.mobileprovision
+
+# 本地工具目录（IDE 索引 / 会话记忆，不入库）
+.workbuddy/
+.trae/

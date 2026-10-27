@@ -35,6 +35,10 @@ struct M3U8Segment {
     var duration: Double
     var mediaSequence: Int
     var byteRange: M3U8ByteRange?
+    /// 该分片实际生效的密钥信息（按行记录，支持密钥轮换 / 中途转明文）
+    var keyMethod: M3U8Encryption.Method = .none
+    var keyURI: URL?
+    var ivHex: String?
 }
 
 struct M3U8Variant {
@@ -166,7 +170,10 @@ enum M3U8Parser {
                     url: lineURL,
                     duration: pendingDuration,
                     mediaSequence: sequenceBase + segments.count,
-                    byteRange: pendingRange
+                    byteRange: pendingRange,
+                    keyMethod: encryption?.method ?? .none,
+                    keyURI: encryption?.keyURL,
+                    ivHex: encryption?.ivHex
                 )
             )
             pendingDuration = 0
@@ -206,25 +213,42 @@ enum M3U8Parser {
 
     // MARK: - 属性解析
 
+    /// 解析属性值。手写扫描替代 NSRegularExpression：
+    /// 属性解析在长播放列表里是热点（每行 KEY/STREAM-INF/MAP 要调 3~5 次），
+    /// 每次调用都现编译一条正则，代价比解析本身高一个数量级。
     static func stringAttribute(_ name: String, in attrs: String) -> String? {
-        let escaped = NSRegularExpression.escapedPattern(for: name)
-        let pattern = "(?:^|,)\(escaped)=(?:\"([^\"]*)\"|([^,]*))"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(attrs.startIndex..., in: attrs)
-        guard let match = regex.firstMatch(in: attrs, range: range) else { return nil }
-
-        if match.range(at: 1).location != NSNotFound,
-           let swiftRange = Range(match.range(at: 1), in: attrs) {
-            let value = String(attrs[swiftRange])
-            return value.isEmpty ? nil : value
-        }
-        if match.range(at: 2).location != NSNotFound,
-           let swiftRange = Range(match.range(at: 2), in: attrs) {
-            let value = String(attrs[swiftRange])
+        for field in splitAttributes(attrs) {
+            guard let eq = field.firstIndex(of: "=") else { continue }
+            let key = field[field.startIndex..<eq].trimmingCharacters(in: .whitespaces)
+            guard key == name else { continue }
+            var value = String(field[field.index(after: eq)...])
                 .trimmingCharacters(in: .whitespaces)
+            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+                value = String(value.dropFirst().dropLast())
+            }
             return value.isEmpty ? nil : value
         }
         return nil
+    }
+
+    /// 按逗号切分属性列表，忽略引号内的逗号（如 CODECS="avc1.4d401f,mp4a.40.2"）
+    private static func splitAttributes(_ attrs: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var quoted = false
+        for character in attrs {
+            if character == "\"" {
+                quoted.toggle()
+                current.append(character)
+            } else if character == ",", !quoted {
+                result.append(current)
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
     }
 
     static func intAttribute(_ name: String, in attrs: String) -> Int? {

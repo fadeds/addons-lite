@@ -67,31 +67,44 @@ enum M3U8Downloader {
             throw M3U8DownloadError.parseFailed("播放列表没有分片")
         }
 
-        // 2. 解析加密
-        var aesKey: Data?
-        if let encryption = playlist.encryption {
-            switch encryption.method {
-            case .none:
+        let segments = playlist.segments
+        let total = segments.count
+        // 固定下来供并发闭包捕获（捕获 var 在并发执行下是警告项）
+        let referer = activeReferer
+
+        // 2. 预取加密密钥：按分片记录（支持密钥轮换 / 中途转明文）
+        var keyURLs: Set<URL> = []
+        var hasSampleAES = false
+        var hasUnknownMethod = false
+        for segment in segments {
+            switch segment.keyMethod {
+            case .none, .aes128:
                 break
-            case .aes128:
-                guard let keyURL = encryption.keyURL else {
-                    throw M3U8DownloadError.unsupported("AES-128 密钥地址缺失")
-                }
-                let keyData = try await fetchData(
-                    keyURL,
-                    session: session,
-                    referer: activeReferer
-                )
-                guard keyData.count == 16 else {
-                    throw M3U8DownloadError.unsupported("AES-128 密钥长度异常")
-                }
-                aesKey = keyData
             case .sampleAES:
-                throw M3U8DownloadError.unsupported("SAMPLE-AES 加密流")
+                hasSampleAES = true
             case .unknown:
-                throw M3U8DownloadError.unsupported("未知加密方式")
+                hasUnknownMethod = true
+            }
+            if let keyURL = segment.keyURI {
+                keyURLs.insert(keyURL)
             }
         }
+        if hasSampleAES { throw M3U8DownloadError.unsupported("SAMPLE-AES 加密流") }
+        if hasUnknownMethod { throw M3U8DownloadError.unsupported("未知加密方式") }
+
+        var keyCache: [URL: Data] = [:]
+        for keyURL in keyURLs {
+            let keyData = try await fetchData(
+                keyURL,
+                session: session,
+                referer: activeReferer
+            )
+            guard keyData.count == 16 else {
+                throw M3U8DownloadError.unsupported("AES-128 密钥长度异常")
+            }
+            keyCache[keyURL] = keyData
+        }
+        let keys = keyCache
 
         // 3. 下载 fMP4 初始化分片
         var initData: Data?
@@ -114,49 +127,55 @@ enum M3U8Downloader {
         try fileManager.createDirectory(at: workDir, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: workDir) }
 
-        let segments = playlist.segments
-        let total = segments.count
         let counter = ProgressCounter()
-        let semaphore = AsyncSemaphore(permits: 4)
+        let cursor = SegmentCursor()
         let baseProgress = 0.05
         let progressWeight = 0.85
-        let key = aesKey
-        let ivHex = playlist.encryption?.ivHex
+        let concurrency = min(4, total)
 
+        // 固定 worker 池：只为 4 个 worker 建任务，用游标抢 index。
+        // 原来按分片数建任务（1 小时视频约 900 个）再挂信号量，任务调度开销与内存都高一个量级。
         try await withThrowingTaskGroup(of: Void.self) { group in
-            for (index, segment) in segments.enumerated() {
+            for _ in 0..<concurrency {
                 group.addTask {
-                    await semaphore.wait()
-                    defer { Task { await semaphore.signal() } }
+                    while true {
+                        let index = cursor.next()
+                        guard index < total else { return }
+                        try Task.checkCancellation()
 
-                    let data = try await fetchSegment(
-                        segment,
-                        session: session,
-                        referer: activeReferer
-                    )
-
-                    var payload = data
-                    if let key = key {
-                        let iv = try AESCryptor.iv(
-                            mediaSequence: segment.mediaSequence,
-                            explicitHex: ivHex
+                        let segment = segments[index]
+                        let data = try await fetchSegment(
+                            segment,
+                            session: session,
+                            referer: referer
                         )
-                        payload = try AESCryptor.decrypt(data, key: key, iv: iv)
+
+                        var payload = data
+                        if segment.keyMethod == .aes128 {
+                            guard let keyURL = segment.keyURI, let key = keys[keyURL] else {
+                                throw M3U8DownloadError.unsupported("分片缺少 AES-128 密钥")
+                            }
+                            let iv = try AESCryptor.iv(
+                                mediaSequence: segment.mediaSequence,
+                                explicitHex: segment.ivHex
+                            )
+                            payload = try AESCryptor.decrypt(data, key: key, iv: iv)
+                        }
+
+                        let segmentURL = workDir.appendingPathComponent(
+                            String(format: "seg_%06d.bin", index)
+                        )
+                        try payload.write(to: segmentURL)
+
+                        let finished = counter.increment()
+                        let percent = baseProgress
+                            + progressWeight * Double(finished) / Double(total)
+                        progress?(
+                            .download,
+                            percent,
+                            "下载分片 \(finished)/\(total)"
+                        )
                     }
-
-                    let segmentURL = workDir.appendingPathComponent(
-                        String(format: "seg_%06d.bin", index)
-                    )
-                    try payload.write(to: segmentURL)
-
-                    let finished = counter.increment()
-                    let percent = baseProgress
-                        + progressWeight * Double(finished) / Double(total)
-                    progress?(
-                        .download,
-                        percent,
-                        "下载分片 \(finished)/\(total)"
-                    )
                 }
             }
             try await group.waitForAll()
@@ -198,22 +217,28 @@ enum M3U8Downloader {
 
         // 6. 转封装为 MP4
         progress?(.remux, 0.96, "转封装 MP4")
-        let finalName = Storage.uniqueDestination(
-            fileName: storageFileName(for: video, ext: "mp4")
-        )
+        let preferredName = storageFileName(for: video, ext: "mp4")
+        let finalURL: URL
 
         do {
             let remuxedURL = workDir.appendingPathComponent("output.mp4")
             try await TSRemuxer.remux(input: mergedURL, output: remuxedURL)
-            try fileManager.moveItem(at: remuxedURL, to: finalName)
+            // 选名与移动在同一把锁内完成，避免与直链下载撞名
+            finalURL = try Storage.commitDownload(
+                from: remuxedURL,
+                preferredName: preferredName
+            )
         } catch {
             if error is CancellationError { throw error }
             // 转封装失败时保留合并后的原始文件（TS / 分片MP4），仍可播放
-            try fileManager.moveItem(at: mergedURL, to: finalName)
+            finalURL = try Storage.commitDownload(
+                from: mergedURL,
+                preferredName: preferredName
+            )
         }
 
         progress?(.done, 1.0, "完成")
-        return finalName
+        return finalURL
     }
 
     // MARK: - HTTP
@@ -401,31 +426,17 @@ enum M3U8Downloader {
 
 // MARK: - 并发工具
 
-private actor AsyncSemaphore {
-    private var permits: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+/// 分片游标：worker 池用原子自增抢下一个待下载下标
+private final class SegmentCursor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var index = 0
 
-    init(permits: Int) {
-        self.permits = permits
-    }
-
-    func wait() async {
-        if permits > 0 {
-            permits -= 1
-            return
-        }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            waiters.append(continuation)
-        }
-    }
-
-    func signal() {
-        if waiters.isEmpty {
-            permits += 1
-        } else {
-            let waiter = waiters.removeFirst()
-            waiter.resume()
-        }
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = index
+        index += 1
+        return current
     }
 }
 

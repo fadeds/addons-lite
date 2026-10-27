@@ -40,9 +40,14 @@ final class UpdateChecker: ObservableObject {
     }
 
     var configuredRepo: String {
+        // Release 构建只信任打包进 Info.plist 的仓库。
+        // 允许运行时改仓库 = 允许本机任意进程把更新指向任意 GitHub 仓库的 release，
+        // 配合 OTA 安装就是一条完整的提权链，仅 Debug 保留该便利。
+        #if DEBUG
         let override = UserDefaults.standard.string(forKey: UpdateChecker.repoKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !override.isEmpty { return override }
+        #endif
         let infoRepo = Bundle.main.object(forInfoDictionaryKey: "VSUpdateRepo") as? String ?? ""
         return infoRepo.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -50,8 +55,15 @@ final class UpdateChecker: ObservableObject {
     var isRepoConfigured: Bool {
         let repo = configuredRepo
         guard !repo.isEmpty, !repo.hasPrefix("YOUR_NAME") else { return false }
-        let parts = repo.split(separator: "/")
-        return parts.count == 2 && parts[0].count > 0 && parts[1].count > 0
+        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        // 只允许 owner/repo 的合法字符，挡住 a/../../evil 这类拼接
+        let allowed = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+        )
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.unicodeScalars.allSatisfy { allowed.contains($0) }
+        }
     }
 
     // MARK: - 入口
@@ -140,7 +152,8 @@ final class UpdateChecker: ObservableObject {
     private struct GitHubRelease: Decodable {
         let tagName: String
         let htmlURLString: String
-        let body: String
+        // GitHub 在没有正文时会返回 "body": null，必须可选，否则整个解码失败
+        let body: String?
         let prerelease: Bool
         let assets: [Asset]
 
@@ -174,6 +187,10 @@ final class UpdateChecker: ObservableObject {
         request.timeoutInterval = 15
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("VideoSniffer", forHTTPHeaderField: "User-Agent")
+
+        guard ManifestInstaller.isTrustedUpdateURL(url) else {
+            throw UpdateError.network("非受信更新源")
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -212,13 +229,21 @@ final class UpdateChecker: ObservableObject {
             $0.name.lowercased().hasSuffix(".ipa")
         }
 
+        // 只放行受信域名下的资产链接，避免 release 正文里塞第三方下载地址
+        func trusted(_ raw: String?) -> URL? {
+            guard let raw, let url = URL(string: raw),
+                  ManifestInstaller.isTrustedUpdateURL(url)
+            else { return nil }
+            return url
+        }
+
         return UpdateInfo(
             version: version,
             tagName: release.tagName,
-            notes: release.body,
-            htmlURL: URL(string: release.htmlURLString),
-            manifestAssetURL: manifestAsset.flatMap { URL(string: $0.browserDownloadUrl) },
-            ipaAssetURL: ipaAsset.flatMap { URL(string: $0.browserDownloadUrl) },
+            notes: release.body ?? "",
+            htmlURL: trusted(release.htmlURLString),
+            manifestAssetURL: trusted(manifestAsset?.browserDownloadUrl),
+            ipaAssetURL: trusted(ipaAsset?.browserDownloadUrl),
             prerelease: release.prerelease
         )
     }

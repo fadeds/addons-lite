@@ -35,7 +35,15 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private var hlsTasks: [String: Task<Void, Never>] = [:]
     private var directTasks: [String: URLSessionDownloadTask] = [:]
+    /// 直链任务队列：超过并发上限的先排队，等前一个结束再启动
+    private var pendingDirectQueue: [String] = []
+    private let maxConcurrentDirect = 3
     private var lastPersist = Date.distantPast
+    private var lastProgressTick: [String: Date] = [:]
+    private let persistQueue = DispatchQueue(
+        label: "com.videosniffer.download.persist",
+        qos: .utility
+    )
 
     /// 直链下载使用前台会话：临时文件位于 App 沙盒内，
     /// 避免 TrollStore/侧载环境下后台会话临时文件（nsurlsessiond）无访问权限的问题
@@ -97,6 +105,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     record.finishedAt = .now
                 }
             } else {
+                pendingDirectQueue.removeAll { $0 == id }
                 if let download = directTasks[id] {
                     directTasks[id] = nil
                     download.cancel()
@@ -183,33 +192,56 @@ final class DownloadManager: NSObject, ObservableObject {
     private func start(id: String) {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
         let video = tasks[index].video
-        tasks[index].state = .downloading
-        persist()
 
         if video.isHLS {
+            tasks[index].state = .downloading
+            persist()
             let task = Task { [weak self] in
                 guard let self else { return }
                 await self.runHLS(id: id, video: video)
             }
             hlsTasks[id] = task
-        } else {
-            guard let url = video.parsedURL else {
-                finish(id: id, state: .failed, error: "无效链接")
-                return
-            }
-            var request = URLRequest(url: url)
-            request.setValue(
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                forHTTPHeaderField: "User-Agent"
-            )
-            if let referer = video.referer {
-                request.setValue(referer, forHTTPHeaderField: "Referer")
-            }
-            let download = session.downloadTask(with: request)
-            download.taskDescription = id
-            directTasks[id] = download
-            download.resume()
+            return
+        }
+
+        // 直链：超过并发上限先排队，避免一次入队几十个任务就开几十条连接
+        guard directTasks.count < maxConcurrentDirect else {
+            tasks[index].state = .queued
+            if !pendingDirectQueue.contains(id) { pendingDirectQueue.append(id) }
+            persistThrottled()
+            return
+        }
+
+        tasks[index].state = .downloading
+        persist()
+
+        guard let url = video.parsedURL else {
+            finish(id: id, state: .failed, error: "无效链接")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            forHTTPHeaderField: "User-Agent"
+        )
+        if let referer = video.referer {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        let download = session.downloadTask(with: request)
+        download.taskDescription = id
+        directTasks[id] = download
+        download.resume()
+    }
+
+    /// 有空位就启动排队中的直链任务
+    private func pumpDirectQueue() {
+        while directTasks.count < maxConcurrentDirect, !pendingDirectQueue.isEmpty {
+            let next = pendingDirectQueue.removeFirst()
+            guard let index = tasks.firstIndex(where: { $0.id == next }),
+                  tasks[index].state == .queued
+            else { continue }
+            start(id: next)
         }
     }
 
@@ -282,8 +314,12 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func persist() {
-        Storage.save(tasks, to: DownloadManager.tasksFile)
         lastPersist = Date()
+        // 编码 + 原子写放到串行后台队列：任务多时主线程全量重写会直接掉帧
+        let snapshot = tasks
+        persistQueue.async {
+            Storage.save(snapshot, to: DownloadManager.tasksFile)
+        }
     }
 
     private func persistThrottled() {
@@ -315,10 +351,10 @@ extension DownloadManager: URLSessionDownloadDelegate {
         do {
             let suggested = downloadTask.response?.suggestedFilename
             let rawName = suggested ?? "video_\(Int(Date().timeIntervalSince1970)).mp4"
-            let destination = Storage.uniqueDestination(
-                fileName: Storage.sanitizeFileName(rawName)
+            let destination = try Storage.commitDownload(
+                from: location,
+                preferredName: rawName
             )
-            try FileManager.default.moveItem(at: location, to: destination)
             DownloadResultBox.shared.store(.success(destination.lastPathComponent), for: id)
         } catch {
             DownloadResultBox.shared.store(
@@ -338,7 +374,16 @@ extension DownloadManager: URLSessionDownloadDelegate {
         guard let id = downloadTask.taskDescription else { return }
         let expected = totalBytesExpectedToWrite
         Task { @MainActor [weak self] in
-            self?.set(id: id) { record in
+            guard let self else { return }
+            // 进度回调频率可达每秒数十次：未满足最小间隔就丢弃，
+            // 最终状态由终态回调补齐，UI 观感不变但少掉大量 SwiftUI 重算
+            let now = Date()
+            if let last = self.lastProgressTick[id],
+               now.timeIntervalSince(last) < 0.25 {
+                return
+            }
+            self.lastProgressTick[id] = now
+            self.set(id: id) { record in
                 record.state = .downloading
                 record.receivedBytes = totalBytesWritten
                 if expected > 0 {
@@ -361,6 +406,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.directTasks[id] = nil
+                self.lastProgressTick[id] = nil
                 // 已落盘但任务报错：删除文件，避免残留
                 if case .some(.success(let name)) = stored {
                     try? FileManager.default.removeItem(
@@ -379,6 +425,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                         record.finishedAt = .now
                     }
                 }
+                self.pumpDirectQueue()
             }
             return
         }
@@ -387,6 +434,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.directTasks[id] = nil
+            self.lastProgressTick[id] = nil
             let result = DownloadResultBox.shared.take(id)
             guard let index = self.tasks.firstIndex(where: { $0.id == id }) else {
                 // 记录已被删除：清理刚落地的文件，避免孤儿文件残留
@@ -395,6 +443,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                         at: Storage.downloadsURL.appendingPathComponent(name)
                     )
                 }
+                self.pumpDirectQueue()
                 return
             }
 
@@ -422,6 +471,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 }
             }
             self.persist()
+            self.pumpDirectQueue()
         }
     }
 }

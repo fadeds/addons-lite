@@ -1,5 +1,15 @@
 import Foundation
 
+enum StorageError: Error, LocalizedError {
+    case nameExhausted
+
+    var errorDescription: String? {
+        switch self {
+        case .nameExhausted: return "无法生成可用的文件名（同名文件过多）"
+        }
+    }
+}
+
 enum Storage {
     static let fileManager = FileManager.default
 
@@ -56,7 +66,8 @@ enum Storage {
         let url = supportURL.appendingPathComponent(fileName)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // 不再 prettyPrinted：任务列表每次状态变更都全量重写，格式化只会白烧 CPU 和磁盘
+        encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(value) else { return }
         try? data.write(to: url, options: .atomic)
     }
@@ -93,26 +104,71 @@ enum Storage {
         let mapped = decoded.unicodeScalars.map { illegal.contains($0) ? "_" : $0 }
         var name = String(String.UnicodeScalarView(mapped))
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // ".." 不含非法字符，但会被 appendingPathComponent 解析成上级目录
+        while name.contains("..") {
+            name = name.replacingOccurrences(of: "..", with: "_")
+        }
+        while name.hasPrefix(".") {
+            name.removeFirst()
+        }
         if name.isEmpty {
             name = "video_\(Int(Date().timeIntervalSince1970))"
         }
         if name.count > 100 {
-            name = String(name.prefix(100))
+            // 截断时保住扩展名：否则 AVFoundation 会因后缀缺失拒绝播放
+            let ext = (name as NSString).pathExtension
+            if ext.isEmpty {
+                name = String(name.prefix(100))
+            } else {
+                let base = (name as NSString).deletingPathExtension
+                let keep = max(1, 100 - ext.count - 1)
+                name = String(base.prefix(keep)) + "." + ext
+            }
         }
         return name
     }
 
-    /// 生成不冲突的目标文件名
-    static func uniqueDestination(fileName: String) -> URL {
-        let base = (fileName as NSString).deletingPathExtension
-        let ext = (fileName as NSString).pathExtension
-        var candidate = downloadsURL.appendingPathComponent(fileName)
-        var index = 1
-        while fileManager.fileExists(atPath: candidate.path) {
-            let name = ext.isEmpty ? "\(base)_\(index)" : "\(base)_\(index).\(ext)"
-            candidate = downloadsURL.appendingPathComponent(name)
-            index += 1
+    private static let nameLock = NSLock()
+
+    /// 选一个不冲突的文件名并把文件移入下载目录（同一把锁内完成"检查 + 移动"）。
+    /// 直链下载回调与 HLS 流水线可能同时落盘，先 fileExists 再 moveItem 会撞名：
+    /// 第二个 moveItem 抛错后任务被标记失败，文件直接丢。
+    static func commitDownload(from source: URL, preferredName: String) throws -> URL {
+        ensureDirectories()
+        let dir = downloadsURL
+        let dirPath = dir.standardizedFileURL.path + "/"
+        let sanitized = sanitizeFileName(preferredName)
+        let base = (sanitized as NSString).deletingPathExtension
+        let ext = (sanitized as NSString).pathExtension
+
+        nameLock.lock()
+        defer { nameLock.unlock() }
+
+        for index in 0...999 {
+            let name: String
+            if index == 0 {
+                name = sanitized
+            } else if ext.isEmpty {
+                name = "\(base)_\(index)"
+            } else {
+                name = "\(base)_\(index).\(ext)"
+            }
+
+            let candidate = dir.appendingPathComponent(name, isDirectory: false)
+                .standardizedFileURL
+            // 兜底：任何清洗漏网都不能写到下载目录之外
+            guard candidate.path.hasPrefix(dirPath) else { continue }
+            guard !fileManager.fileExists(atPath: candidate.path) else { continue }
+
+            do {
+                try fileManager.moveItem(at: source, to: candidate)
+                return candidate
+            } catch {
+                // 外部进程抢注同名时换下一个名字重试，其它 IO 错误原样抛出
+                if fileManager.fileExists(atPath: candidate.path) { continue }
+                throw error
+            }
         }
-        return candidate
+        throw StorageError.nameExhausted
     }
 }
