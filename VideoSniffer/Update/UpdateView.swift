@@ -92,7 +92,12 @@ struct UpdateSection: View {
                 }
             )
         }
-        .alert("升级失败", isPresented: $showUpgradeError) {
+        .alert("无法直接安装", isPresented: $showUpgradeError) {
+            if let ipa = fallbackInfo?.ipaAssetURL {
+                Button("下载 ipa") {
+                    UIApplication.shared.open(ipa, options: [:], completionHandler: nil)
+                }
+            }
             if let url = fallbackInfo?.htmlURL {
                 Button("打开发布页") {
                     UIApplication.shared.open(url, options: [:], completionHandler: nil)
@@ -136,10 +141,14 @@ struct UpdateSection: View {
     }
 
     private var footerText: String {
-        if checker.isRepoConfigured {
-            return "更新源：GitHub \(checker.configuredRepo)（Release 需包含 ipa 与 manifest.plist 资产）"
+        guard checker.isRepoConfigured else {
+            return "填写 GitHub 仓库（owner/repo）以启用应用内升级"
         }
-        return "填写 GitHub 仓库（owner/repo）以启用应用内升级"
+        return """
+        更新源：GitHub \(checker.configuredRepo)。
+        当前为未签名构建，App 内只能把 ipa 交给 TrollStore 安装；
+        若要让「立即升级」直接装，需为 CI 配置签名证书，产出 manifest.plist。
+        """
     }
 
     private func notesText(_ info: UpdateInfo) -> String {
@@ -169,9 +178,22 @@ struct UpdateSection: View {
         }
 
         guard let manifestURL = info.manifestAssetURL else {
-            if let url = info.htmlURL {
-                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            // 未签名构建（CI 没配证书）不会产出 manifest.plist。
+            // iOS 的 itms-services OTA 要求 ipa 已签名，所以这里没有"一键安装"可用，
+            // 只能把 ipa 交给 TrollStore / AltStore 处理。
+            fallbackInfo = info
+            altStoreFallback = info.ipaAssetURL.flatMap {
+                ManifestInstaller.altStoreInstallURL(ipaURL: $0)
             }
+            upgradeErrorMessage = """
+            本次发布是未签名构建，缺少 manifest.plist，系统不支持一键直装。
+
+            可选做法：
+            • 已装 TrollStore：回到上一页打开「通过 TrollStore 安装更新」再试
+            • 若提示找不到 TrollStore：到 TrollStore 设置里开启 URL Scheme
+            • 或直接下载 ipa，在「文件」里用 TrollStore 打开
+            """
+            showUpgradeError = true
             return
         }
 

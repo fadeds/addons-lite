@@ -21,6 +21,8 @@ struct PlayerView: View {
     @StateObject private var hud = HUDCenter()
 
     @State private var scrubProgress: Double?
+    /// 工具栏显隐：单击视频区切换
+    @State private var barsVisible = true
 
     @State private var dragMode: DragMode = .none
     @State private var dragAnchor: Double = 0
@@ -63,23 +65,31 @@ struct PlayerView: View {
                 compactTopBar
                     .frame(height: topH)
                     .clipped()
-                    .opacity(isFull ? 0 : 1)
-                    .allowsHitTesting(!isFull)
+                    .opacity(isFull || !barsVisible ? 0 : 1)
+                    .allowsHitTesting(!isFull && barsVisible)
 
                 videoLayer(size: videoSize)
 
                 compactBottomBar
                     .frame(height: botH)
                     .clipped()
-                    .opacity(isFull ? 0 : 1)
-                    .allowsHitTesting(!isFull)
+                    .opacity(isFull || !barsVisible ? 0 : 1)
+                    .allowsHitTesting(!isFull && barsVisible)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay(alignment: .top) {
-                if isFull { fullTopBar }
+                if isFull {
+                    fullTopBar
+                        .opacity(barsVisible ? 1 : 0)
+                        .allowsHitTesting(barsVisible)
+                }
             }
             .overlay(alignment: .bottom) {
-                if isFull { fullBottomBar }
+                if isFull {
+                    fullBottomBar
+                        .opacity(barsVisible ? 1 : 0)
+                        .allowsHitTesting(barsVisible)
+                }
             }
             .clipShape(
                 RoundedRectangle(cornerRadius: isFull ? 0 : 12, style: .continuous)
@@ -97,6 +107,7 @@ struct PlayerView: View {
         .onAppear(perform: handleAppear)
         .onDisappear(perform: handleDisappear)
         .onChange(of: appState.playerMode) { mode in
+            barsVisible = true
             if mode == .full {
                 OrientationManager.shared.lockLandscape()
             } else {
@@ -125,23 +136,28 @@ struct PlayerView: View {
         .clipped()
     }
 
-    /// 视频区手势层。
-    ///
-    /// 小窗只保留单击（播放/暂停）：不挂任何 DragGesture，
-    /// 避免拖拽手势与窗口移动互相干扰。
+    /// 视频区手势层：
+    /// - 双击：播放 / 暂停
+    /// - 单击：显示 / 隐藏顶栏和底栏
     @ViewBuilder
     private func interactionLayer(size: CGSize) -> some View {
         if isFull {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(videoGesture(size: size))
-                // 双击退出全屏：不依赖顶栏按钮的兜底出口
-                .onTapGesture(count: 2) { appState.playerMode = .mini }
-                .onTapGesture { model.togglePlay() }
+                .onTapGesture(count: 2) { model.togglePlay() }
+                .onTapGesture { toggleBars() }
         } else {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture { model.togglePlay() }
+                .onTapGesture(count: 2) { model.togglePlay() }
+                .onTapGesture { toggleBars() }
+        }
+    }
+
+    private func toggleBars() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            barsVisible.toggle()
         }
     }
 
