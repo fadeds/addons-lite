@@ -70,19 +70,26 @@ private struct PlayerHost: View {
 
             // 偏移由 PlayerView 内部应用，宿主只持有状态。
             // 不做任何手势包裹：包裹式手势会和播放器内部的按钮抢触摸。
+            //
+            // 全屏时不给显式尺寸，直接撑满父容器：
+            // 旋转后如果还在按 geo.size 算尺寸，视图可能仍是旋转前的竖屏大小，
+            // 控制条被顶到可视区之外 —— 表现为"画面正常但按钮点不到"。
             PlayerView(
                 url: url,
                 windowOffset: windowOffset,
                 windowOffsetLimit: limit,
                 onWindowOffsetChange: { windowOffset = $0 }
             )
-            .frame(width: size.width, height: size.height)
-            .padding(.top, mode == .mini ? 8 : 0)
             .frame(
-                width: geo.size.width,
-                height: geo.size.height,
-                alignment: mode == .full ? .center : .top
+                width: mode == .mini ? size.width : nil,
+                height: mode == .mini ? size.height : nil
             )
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: mode == .mini ? .top : .center
+            )
+            .padding(.top, mode == .mini ? 8 : 0)
         }
     }
 }

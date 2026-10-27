@@ -152,6 +152,10 @@ struct PlayerView: View {
         Color.clear
             .contentShape(Rectangle())
             .gesture(videoGesture(size: size))
+            // 双击退出全屏：不依赖顶栏按钮的兜底出口
+            .onTapGesture(count: 2) {
+                if isFull { appState.playerMode = .mini }
+            }
             .onTapGesture { model.togglePlay() }
     }
 
