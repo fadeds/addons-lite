@@ -16,13 +16,15 @@ struct PlayerView: View {
     var windowOffsetLimit: CGSize = .zero
     var onWindowOffsetChange: (CGSize) -> Void = { _ in }
 
+    /// 工具栏显隐由宿主持有：小窗隐藏时窗口高度也要跟着收缩，
+    /// 否则点不到的那两条黑边会一直挡在视频上下
+    @Binding var barsVisible: Bool
+
     @EnvironmentObject private var appState: AppState
     @StateObject private var model: PlayerModel
     @StateObject private var hud = HUDCenter()
 
     @State private var scrubProgress: Double?
-    /// 工具栏显隐：单击视频区切换
-    @State private var barsVisible = true
 
     @State private var dragMode: DragMode = .none
     @State private var dragAnchor: Double = 0
@@ -37,6 +39,7 @@ struct PlayerView: View {
         referer: String? = nil,
         windowOffset: CGSize = .zero,
         windowOffsetLimit: CGSize = .zero,
+        barsVisible: Binding<Bool>,
         onWindowOffsetChange: @escaping (CGSize) -> Void = { _ in }
     ) {
         self.url = url
@@ -44,6 +47,7 @@ struct PlayerView: View {
         self.windowOffset = windowOffset
         self.windowOffsetLimit = windowOffsetLimit
         self.onWindowOffsetChange = onWindowOffsetChange
+        _barsVisible = barsVisible
         _model = StateObject(wrappedValue: PlayerModel(url: url, referer: referer))
     }
 
@@ -53,28 +57,28 @@ struct PlayerView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let topH = isFull ? 0 : PlayerLayout.topBar
-            let botH = isFull ? 0 : PlayerLayout.bottomBar
+            let topH = (isFull || !barsVisible) ? 0 : PlayerLayout.topBar
+            let botH = (isFull || !barsVisible) ? 0 : PlayerLayout.bottomBar
             let videoH = max(geo.size.height - topH - botH, 1)
             let videoSize = CGSize(width: geo.size.width, height: videoH)
 
             VStack(spacing: 0) {
                 // 小窗：顶栏/视频/底栏在布局流里各占一段，物理上不重叠，
-                // 手势层不可能盖到按钮上。全屏时高度收成 0，改用 overlay。
-                // 用"高度归零"而不是 if/else 替换视图，保证子视图身份稳定。
+                // 手势层不可能盖到按钮上。收起后高度归零，视频区吃掉整个窗口，
+                // 这样"点任意位置唤回工具栏"才是真的块级区域。
                 compactTopBar
                     .frame(height: topH)
                     .clipped()
-                    .opacity(isFull ? 0 : 1)
-                    .allowsHitTesting(!isFull)
+                    .opacity(topH > 0 ? 1 : 0)
+                    .allowsHitTesting(topH > 0)
 
                 videoLayer(size: videoSize)
 
                 compactBottomBar
                     .frame(height: botH)
                     .clipped()
-                    .opacity(isFull ? 0 : 1)
-                    .allowsHitTesting(!isFull)
+                    .opacity(botH > 0 ? 1 : 0)
+                    .allowsHitTesting(botH > 0)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay(alignment: .top) {
@@ -148,10 +152,12 @@ struct PlayerView: View {
                 .onTapGesture(count: 2) { model.togglePlay() }
                 .onTapGesture { toggleBars() }
         } else {
-            // 小窗控制条常显：单击不切换显隐，否则藏起来后就没有操作入口了
+            // 小窗：单击唤回/收起工具栏。收起后视频区铺满整个窗口，
+            // 所以"点哪里都能唤回"，不存在点不到的黑边。
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { model.togglePlay() }
+                .onTapGesture { toggleBars() }
         }
     }
 
@@ -548,13 +554,15 @@ enum PlayerLayout {
     static let topBar: CGFloat = 32
     static let bottomBar: CGFloat = 40
 
-    static func size(mode: PlayerMode, container: CGSize) -> CGSize {
+    static func size(mode: PlayerMode, container: CGSize, showsBars: Bool = true) -> CGSize {
         switch mode {
         case .mini:
-            // 小窗充满宽度（左右各留 12pt），高度按 16:9 + 控制条
+            // 小窗充满宽度（左右各留 12pt），高度按 16:9 + 控制条；
+            // 控制条收起时窗口同步变矮，视频区铺满整个窗口
             let width = max(container.width - 24, 200)
             let video = (width * 9 / 16).rounded()
-            return CGSize(width: width, height: video + topBar + bottomBar)
+            let bars: CGFloat = showsBars ? (topBar + bottomBar) : 0
+            return CGSize(width: width, height: video + bars)
         case .full:
             return container
         }

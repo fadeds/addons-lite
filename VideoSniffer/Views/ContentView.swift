@@ -61,12 +61,22 @@ private struct PlayerHost: View {
 
     @EnvironmentObject private var appState: AppState
     @State private var windowOffset: CGSize = .zero
+    @State private var barsVisible = true
 
     var body: some View {
         GeometryReader { geo in
             let mode = appState.playerMode
-            let size = PlayerLayout.size(mode: mode, container: geo.size)
+            let size = PlayerLayout.size(
+                mode: mode,
+                container: geo.size,
+                showsBars: barsVisible
+            )
             let limit = PlayerLayout.dragLimit(mode: mode, container: geo.size, window: size)
+            // 窗口尺寸变化后（收起/展开控制条）把偏移夹回合法范围
+            let clampedOffset = CGSize(
+                width: min(max(windowOffset.width, -limit.width), limit.width),
+                height: min(max(windowOffset.height, 0), limit.height)
+            )
 
             // 偏移由 PlayerView 内部应用，宿主只持有状态。
             // 不做任何手势包裹：包裹式手势会和播放器内部的按钮抢触摸。
@@ -76,8 +86,9 @@ private struct PlayerHost: View {
             // 控制条被顶到可视区之外 —— 表现为"画面正常但按钮点不到"。
             PlayerView(
                 url: url,
-                windowOffset: windowOffset,
+                windowOffset: clampedOffset,
                 windowOffsetLimit: limit,
+                barsVisible: $barsVisible,
                 onWindowOffsetChange: { windowOffset = $0 }
             )
             .frame(
@@ -87,8 +98,8 @@ private struct PlayerHost: View {
             // offset 必须放在尺寸 frame 之后：放在里面时命中区域会留在原位，
             // 内容却已经被移走，表现为"看得见但点不到"。
             .offset(
-                x: mode == .mini ? windowOffset.width : 0,
-                y: mode == .mini ? windowOffset.height : 0
+                x: mode == .mini ? clampedOffset.width : 0,
+                y: mode == .mini ? clampedOffset.height : 0
             )
             .frame(
                 maxWidth: .infinity,
