@@ -56,50 +56,30 @@ struct PlayerView: View {
             let videoH = max(geo.size.height - topH - botH, 1)
             let videoSize = CGSize(width: geo.size.width, height: videoH)
 
-            ZStack(alignment: .top) {
-                Color.black
-
-                // 渲染层必须是全树唯一实例。
-                // 一旦按 mode 拆成两棵子树，切全屏时 SwiftUI 会销毁旧容器、
-                // 把 KSPlayer 的 UIView 搬到新容器，画面立刻冻结（音频还在跑）。
-                PlayerSurface(player: model.layer)
-                    .frame(width: geo.size.width, height: videoH)
-                    .padding(.top, topH)
-                    .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                // 小窗：顶栏/视频/底栏在布局流里各占一段，物理上不重叠，
+                // 手势层不可能盖到按钮上。全屏时高度收成 0，改用 overlay。
+                // 用"高度归零"而不是 if/else 替换视图，保证子视图身份稳定。
+                compactTopBar
+                    .frame(height: topH)
                     .clipped()
+                    .opacity(isFull ? 0 : 1)
+                    .allowsHitTesting(!isFull)
 
-                interactionLayer(size: videoSize)
-                    .frame(width: geo.size.width, height: videoH)
-                    .padding(.top, topH)
+                videoLayer(size: videoSize)
 
-                statusOverlay
-                    .frame(width: geo.size.width, height: videoH)
-                    .padding(.top, topH)
-                    .allowsHitTesting(false)
-
-                if let content = hud.content {
-                    hudView(content)
-                        .frame(width: geo.size.width, height: videoH)
-                        .padding(.top, topH)
-                }
+                compactBottomBar
+                    .frame(height: botH)
+                    .clipped()
+                    .opacity(isFull ? 0 : 1)
+                    .allowsHitTesting(!isFull)
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            // 控制条用 overlay 挂在内容之上。
-            // 之前放在 ZStack 里靠 zIndex 排队，透明层会参与命中测试竞争，
-            // 全屏时按钮点不到；overlay 天然位于宿主之上，按钮不会再被抢。
             .overlay(alignment: .top) {
-                if isFull {
-                    fullTopBar
-                } else {
-                    compactTopBar
-                }
+                if isFull { fullTopBar }
             }
             .overlay(alignment: .bottom) {
-                if isFull {
-                    fullBottomBar
-                } else {
-                    compactBottomBar
-                }
+                if isFull { fullBottomBar }
             }
             .clipShape(
                 RoundedRectangle(cornerRadius: isFull ? 0 : 12, style: .continuous)
@@ -126,6 +106,24 @@ struct PlayerView: View {
     }
 
     // MARK: - 布局
+
+    /// 视频层：渲染 + 手势 + 状态覆盖，不含任何控制条。
+    /// PlayerSurface 全树只有这一个实例，切形态时不会被搬走（搬家会导致画面冻结）。
+    private func videoLayer(size: CGSize) -> some View {
+        ZStack {
+            Color.black
+            PlayerSurface(player: model.layer)
+                .allowsHitTesting(false)
+            interactionLayer(size: size)
+            statusOverlay
+                .allowsHitTesting(false)
+            if let content = hud.content {
+                hudView(content)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
 
     /// 视频区手势层。
     ///
