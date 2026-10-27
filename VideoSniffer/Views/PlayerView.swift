@@ -65,16 +65,16 @@ struct PlayerView: View {
                 compactTopBar
                     .frame(height: topH)
                     .clipped()
-                    .opacity(isFull || !barsVisible ? 0 : 1)
-                    .allowsHitTesting(!isFull && barsVisible)
+                    .opacity(isFull ? 0 : 1)
+                    .allowsHitTesting(!isFull)
 
                 videoLayer(size: videoSize)
 
                 compactBottomBar
                     .frame(height: botH)
                     .clipped()
-                    .opacity(isFull || !barsVisible ? 0 : 1)
-                    .allowsHitTesting(!isFull && barsVisible)
+                    .opacity(isFull ? 0 : 1)
+                    .allowsHitTesting(!isFull)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay(alignment: .top) {
@@ -148,10 +148,10 @@ struct PlayerView: View {
                 .onTapGesture(count: 2) { model.togglePlay() }
                 .onTapGesture { toggleBars() }
         } else {
+            // 小窗控制条常显：单击不切换显隐，否则藏起来后就没有操作入口了
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2) { model.togglePlay() }
-                .onTapGesture { toggleBars() }
         }
     }
 
@@ -551,7 +551,8 @@ enum PlayerLayout {
     static func size(mode: PlayerMode, container: CGSize) -> CGSize {
         switch mode {
         case .mini:
-            let width = min(max(container.width - 80, 200), 288)
+            // 小窗充满宽度（左右各留 12pt），高度按 16:9 + 控制条
+            let width = max(container.width - 24, 200)
             let video = (width * 9 / 16).rounded()
             return CGSize(width: width, height: video + topBar + bottomBar)
         case .full:
