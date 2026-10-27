@@ -58,7 +58,6 @@ struct PlayerView: View {
 
             ZStack(alignment: .top) {
                 Color.black
-                    .zIndex(0)
 
                 // 渲染层必须是全树唯一实例。
                 // 一旦按 mode 拆成两棵子树，切全屏时 SwiftUI 会销毁旧容器、
@@ -68,54 +67,40 @@ struct PlayerView: View {
                     .padding(.top, topH)
                     .allowsHitTesting(false)
                     .clipped()
-                    .zIndex(1)
 
                 interactionLayer(size: videoSize)
                     .frame(width: geo.size.width, height: videoH)
                     .padding(.top, topH)
-                    .zIndex(2)
 
                 statusOverlay
                     .frame(width: geo.size.width, height: videoH)
                     .padding(.top, topH)
                     .allowsHitTesting(false)
-                    .zIndex(3)
 
                 if let content = hud.content {
                     hudView(content)
                         .frame(width: geo.size.width, height: videoH)
                         .padding(.top, topH)
-                        .zIndex(4)
-                }
-
-                // 控制层：全屏拆成"顶部半区 / 底部半区"两个独立层，
-                // 都压在 zIndex(10) 上。之前是一个撑满全屏的 VStack，
-                // 配合下层手势层会把按钮点击吞掉。
-                if isFull {
-                    VStack(spacing: 0) {
-                        fullTopBar
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .zIndex(10)
-
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        fullBottomBar
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .zIndex(10)
-                } else {
-                    VStack(spacing: 0) {
-                        compactTopBar
-                        Spacer(minLength: 0)
-                        compactBottomBar
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .zIndex(10)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // 控制条用 overlay 挂在内容之上。
+            // 之前放在 ZStack 里靠 zIndex 排队，透明层会参与命中测试竞争，
+            // 全屏时按钮点不到；overlay 天然位于宿主之上，按钮不会再被抢。
+            .overlay(alignment: .top) {
+                if isFull {
+                    fullTopBar
+                } else {
+                    compactTopBar
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if isFull {
+                    fullBottomBar
+                } else {
+                    compactBottomBar
+                }
+            }
             .clipShape(
                 RoundedRectangle(cornerRadius: isFull ? 0 : 12, style: .continuous)
             )
@@ -129,11 +114,6 @@ struct PlayerView: View {
         }
         .background(Color.black)
         .statusBarHidden(isFull)
-        // 小窗偏移只在这里应用：偏移量变化只会移动渲染位置，不影响任何子视图的身份
-        .offset(
-            x: isFull ? 0 : windowOffset.width,
-            y: isFull ? 0 : windowOffset.height
-        )
         .onAppear(perform: handleAppear)
         .onDisappear(perform: handleDisappear)
         .onChange(of: appState.playerMode) { mode in
@@ -147,31 +127,38 @@ struct PlayerView: View {
 
     // MARK: - 布局
 
-    /// 视频区手势层
+    /// 视频区手势层。
+    ///
+    /// 小窗只保留单击（播放/暂停）：不挂任何 DragGesture，
+    /// 避免拖拽手势与窗口移动互相干扰。
+    @ViewBuilder
     private func interactionLayer(size: CGSize) -> some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .gesture(videoGesture(size: size))
-            // 双击退出全屏：不依赖顶栏按钮的兜底出口
-            .onTapGesture(count: 2) {
-                if isFull { appState.playerMode = .mini }
-            }
-            .onTapGesture { model.togglePlay() }
+        if isFull {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(videoGesture(size: size))
+                // 双击退出全屏：不依赖顶栏按钮的兜底出口
+                .onTapGesture(count: 2) { appState.playerMode = .mini }
+                .onTapGesture { model.togglePlay() }
+        } else {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { model.togglePlay() }
+        }
     }
 
     // MARK: - 顶栏
 
     private var compactTopBar: some View {
-        HStack(spacing: 8) {
-            // 原来是纯装饰的三横杠，点了没反应容易被当成"卡死"。
-            // 换成播放/暂停，点击立即有反馈；顶栏其余区域仍可拖动窗口。
-            Button { model.togglePlay() } label: {
-                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
+        HStack(spacing: 6) {
+            // 拖动手柄：拖拽只在这 30pt 宽的区域生效。
+            // 之前把 DragGesture 包在整窗上，会把顶栏/底栏按钮的 tap 全部吞掉。
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(width: 30, height: PlayerLayout.topBar)
+                .contentShape(Rectangle())
+                .gesture(windowDragGesture)
 
             Text(displayName)
                 .font(.system(size: 11))
@@ -191,6 +178,23 @@ struct PlayerView: View {
         .frame(height: PlayerLayout.topBar)
         .background(Color.black.opacity(0.5))
         .contentShape(Rectangle())
+    }
+
+    /// 小窗拖动：只挂在顶栏手柄上
+    private var windowDragGesture: some Gesture {
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { value in
+                if windowDragAnchor == nil { windowDragAnchor = windowOffset }
+                let start = windowDragAnchor ?? windowOffset
+                var next = CGSize(
+                    width: start.width + value.translation.width,
+                    height: start.height + value.translation.height
+                )
+                next.width = min(max(next.width, -windowOffsetLimit.width), windowOffsetLimit.width)
+                next.height = min(max(next.height, 0), windowOffsetLimit.height)
+                onWindowOffsetChange(next)
+            }
+            .onEnded { _ in windowDragAnchor = nil }
     }
 
     private var fullTopBar: some View {
@@ -234,7 +238,7 @@ struct PlayerView: View {
 
     // MARK: - 底栏
 
-    /// 小窗/宽窗底栏：进度条常显（这是小窗之前缺失的部分）
+    /// 小窗/宽窗底栏：进度条常显 + 倍速
     private var compactBottomBar: some View {
         HStack(spacing: 8) {
             Button { model.togglePlay() } label: {
@@ -250,11 +254,35 @@ struct PlayerView: View {
                 .font(.system(size: 9, weight: .medium).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.85))
                 .fixedSize()
+
+            speedMenuCompact
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
         .frame(height: PlayerLayout.bottomBar)
         .background(Color.black.opacity(0.5))
+    }
+
+    private var speedMenuCompact: some View {
+        Menu {
+            ForEach(PlayerModel.rates, id: \.self) { rate in
+                Button {
+                    model.setRate(rate)
+                } label: {
+                    if abs(model.rate - rate) < 0.01 {
+                        Label(PlayerModel.rateText(rate), systemImage: "checkmark")
+                    } else {
+                        Text(PlayerModel.rateText(rate))
+                    }
+                }
+            }
+        } label: {
+            Text(PlayerModel.rateText(model.rate))
+                .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 30, height: 20)
+                .background(.white.opacity(0.14), in: Capsule())
+        }
     }
 
     private var fullBottomBar: some View {
@@ -396,12 +424,8 @@ struct PlayerView: View {
     private func videoGesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .local)
             .onChanged { value in
-                // 小窗：拖视频区就是移动窗口。
-                // 手势只存在于此层，不会和顶栏/底栏的按钮抢触摸。
-                guard isFull else {
-                    moveWindow(with: value)
-                    return
-                }
+                // 只服务于全屏的进度/亮度/音量；小窗不挂这个手势
+                guard isFull else { return }
                 if dragMode == .none {
                     let dx = value.translation.width
                     let dy = value.translation.height
@@ -461,27 +485,12 @@ struct PlayerView: View {
                 }
             }
             .onEnded { _ in
-                guard isFull else {
-                    windowDragAnchor = nil
-                    return
-                }
+                guard isFull else { return }
                 if dragMode == .seek {
                     model.seek(to: seekTarget)
                 }
                 dragMode = .none
             }
-    }
-
-    private func moveWindow(with value: DragGesture.Value) {
-        if windowDragAnchor == nil { windowDragAnchor = windowOffset }
-        let start = windowDragAnchor ?? windowOffset
-        var next = CGSize(
-            width: start.width + value.translation.width,
-            height: start.height + value.translation.height
-        )
-        next.width = min(max(next.width, -windowOffsetLimit.width), windowOffsetLimit.width)
-        next.height = min(max(next.height, 0), windowOffsetLimit.height)
-        onWindowOffsetChange(next)
     }
 
     private var currentBrightness: CGFloat {

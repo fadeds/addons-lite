@@ -84,6 +84,12 @@ private struct PlayerHost: View {
                 width: mode == .mini ? size.width : nil,
                 height: mode == .mini ? size.height : nil
             )
+            // offset 必须放在尺寸 frame 之后：放在里面时命中区域会留在原位，
+            // 内容却已经被移走，表现为"看得见但点不到"。
+            .offset(
+                x: mode == .mini ? windowOffset.width : 0,
+                y: mode == .mini ? windowOffset.height : 0
+            )
             .frame(
                 maxWidth: .infinity,
                 maxHeight: .infinity,
