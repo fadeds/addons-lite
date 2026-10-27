@@ -4,13 +4,17 @@ import KSPlayer
 
 /// 播放器视图：只负责"长什么样 + 怎么交互"，播放状态全部交给 PlayerModel。
 ///
-/// 三种形态：
-/// - mini：浮窗，顶栏+底栏常显（底栏带进度条），整窗可拖动
-/// - wide：充满屏幕宽度，竖屏，控制条常显
-/// - full：全屏横屏，控制条自动隐藏，视频区手势控制进度/亮度/音量
+/// 两种形态：
+/// - mini：浮窗，视频区拖动 = 移动窗口，底栏带进度条
+/// - full：全屏横屏，视频区手势控制进度/亮度/音量
 struct PlayerView: View {
     let url: URL
     var referer: String?
+
+    /// 小窗偏移由宿主持有，这里只负责展示与写入
+    var windowOffset: CGSize = .zero
+    var windowOffsetLimit: CGSize = .zero
+    var onWindowOffsetChange: (CGSize) -> Void = { _ in }
 
     @EnvironmentObject private var appState: AppState
     @StateObject private var model: PlayerModel
@@ -21,12 +25,23 @@ struct PlayerView: View {
     @State private var dragMode: DragMode = .none
     @State private var dragAnchor: Double = 0
     @State private var seekTarget: Double = 0
+    /// 小窗拖动的起始偏移（手势开始时记录）
+    @State private var windowDragAnchor: CGSize?
 
     private enum DragMode { case none, seek, brightness, volume }
 
-    init(url: URL, referer: String? = nil) {
+    init(
+        url: URL,
+        referer: String? = nil,
+        windowOffset: CGSize = .zero,
+        windowOffsetLimit: CGSize = .zero,
+        onWindowOffsetChange: @escaping (CGSize) -> Void = { _ in }
+    ) {
         self.url = url
         self.referer = referer
+        self.windowOffset = windowOffset
+        self.windowOffsetLimit = windowOffsetLimit
+        self.onWindowOffsetChange = onWindowOffsetChange
         _model = StateObject(wrappedValue: PlayerModel(url: url, referer: referer))
     }
 
@@ -114,6 +129,11 @@ struct PlayerView: View {
         }
         .background(Color.black)
         .statusBarHidden(isFull)
+        // 小窗偏移只在这里应用：偏移量变化只会移动渲染位置，不影响任何子视图的身份
+        .offset(
+            x: isFull ? 0 : windowOffset.width,
+            y: isFull ? 0 : windowOffset.height
+        )
         .onAppear(perform: handleAppear)
         .onDisappear(perform: handleDisappear)
         .onChange(of: appState.playerMode) { mode in
@@ -370,11 +390,14 @@ struct PlayerView: View {
     // MARK: - 手势（全屏：进度、亮度、音量）
 
     private func videoGesture(size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+        DragGesture(minimumDistance: 6, coordinateSpace: .local)
             .onChanged { value in
-                // 小窗里视频区拖动等于移动窗口（由 WindowDragModifier 处理），
-                // 这里必须完全不参与，否则 seek 和移动会同时生效
-                guard isFull else { return }
+                // 小窗：拖视频区就是移动窗口。
+                // 手势只存在于此层，不会和顶栏/底栏的按钮抢触摸。
+                guard isFull else {
+                    moveWindow(with: value)
+                    return
+                }
                 if dragMode == .none {
                     let dx = value.translation.width
                     let dy = value.translation.height
@@ -434,12 +457,27 @@ struct PlayerView: View {
                 }
             }
             .onEnded { _ in
-                guard isFull else { return }
+                guard isFull else {
+                    windowDragAnchor = nil
+                    return
+                }
                 if dragMode == .seek {
                     model.seek(to: seekTarget)
                 }
                 dragMode = .none
             }
+    }
+
+    private func moveWindow(with value: DragGesture.Value) {
+        if windowDragAnchor == nil { windowDragAnchor = windowOffset }
+        let start = windowDragAnchor ?? windowOffset
+        var next = CGSize(
+            width: start.width + value.translation.width,
+            height: start.height + value.translation.height
+        )
+        next.width = min(max(next.width, -windowOffsetLimit.width), windowOffsetLimit.width)
+        next.height = min(max(next.height, 0), windowOffsetLimit.height)
+        onWindowOffsetChange(next)
     }
 
     private var currentBrightness: CGFloat {
@@ -499,67 +537,6 @@ enum PlayerLayout {
         return CGSize(
             width: max((container.width - window.width) / 2 - 12, 0),
             height: max(container.height - window.height - 40, 0)
-        )
-    }
-}
-
-// MARK: - 小窗拖动
-
-/// 小窗拖动。
-///
-/// 偏移量用 `@GestureState` 承载，手势期间只有这个 modifier 重算，
-/// 内部的播放器视图树不会重建 —— 这是拖动不卡的关键。
-struct WindowDragModifier: ViewModifier {
-    @Binding var offset: CGSize
-    let enabled: Bool
-    let limit: CGSize
-
-    @GestureState private var translation: CGSize = .zero
-
-    private func clamp(_ value: CGSize) -> CGSize {
-        CGSize(
-            width: min(max(value.width, -limit.width), limit.width),
-            height: min(max(value.height, -4), limit.height)
-        )
-    }
-
-    func body(content: Content) -> some View {
-        // 全屏时完全不附加手势。
-        // 用 `including: .none` 只是把手势标记为不生效，SwiftUI 仍会为它建立
-        // 手势宿主，和内部按钮抢触摸 —— 这是全屏按钮点不动的直接原因。
-        if enabled {
-            content
-                .offset(x: liveOffset.width, y: liveOffset.height)
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 6)
-                        .updating($translation) { value, state, _ in
-                            state = value.translation
-                        }
-                        .onEnded { value in
-                            // 纯点击不写状态：否则点一下顶栏就会触发父视图重算，
-                            // 白白带来一次整树布局（真机上表现为"点一下就卡"）。
-                            let dx = value.translation.width
-                            let dy = value.translation.height
-                            guard abs(dx) > 0.5 || abs(dy) > 0.5 else { return }
-                            offset = clamp(
-                                CGSize(
-                                    width: offset.width + dx,
-                                    height: offset.height + dy
-                                )
-                            )
-                        }
-                )
-        } else {
-            content
-        }
-    }
-
-    private var liveOffset: CGSize {
-        clamp(
-            CGSize(
-                width: offset.width + translation.width,
-                height: offset.height + translation.height
-            )
         )
     }
 }

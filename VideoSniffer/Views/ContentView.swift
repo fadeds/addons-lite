@@ -68,24 +68,21 @@ private struct PlayerHost: View {
             let size = PlayerLayout.size(mode: mode, container: geo.size)
             let limit = PlayerLayout.dragLimit(mode: mode, container: geo.size, window: size)
 
-            ZStack(alignment: .top) {
-                PlayerView(url: url)
-                    .frame(width: size.width, height: size.height)
-                    .modifier(
-                        WindowDragModifier(
-                            offset: $windowOffset,
-                            enabled: mode == .mini,
-                            limit: limit
-                        )
-                    )
-                    .padding(.top, mode == .mini ? 8 : 0)
-                    .frame(
-                        width: geo.size.width,
-                        height: geo.size.height,
-                        alignment: mode == .full ? .center : .top
-                    )
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
+            // 偏移由 PlayerView 内部应用，宿主只持有状态。
+            // 不做任何手势包裹：包裹式手势会和播放器内部的按钮抢触摸。
+            PlayerView(
+                url: url,
+                windowOffset: windowOffset,
+                windowOffsetLimit: limit,
+                onWindowOffsetChange: { windowOffset = $0 }
+            )
+            .frame(width: size.width, height: size.height)
+            .padding(.top, mode == .mini ? 8 : 0)
+            .frame(
+                width: geo.size.width,
+                height: geo.size.height,
+                alignment: mode == .full ? .center : .top
+            )
         }
     }
 }
