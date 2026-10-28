@@ -63,22 +63,19 @@ struct PlayerView: View {
             let videoSize = CGSize(width: geo.size.width, height: videoH)
 
             VStack(spacing: 0) {
-                // 小窗：顶栏/视频/底栏在布局流里各占一段，物理上不重叠，
-                // 手势层不可能盖到按钮上。收起后高度归零，视频区吃掉整个窗口，
-                // 这样"点任意位置唤回工具栏"才是真的块级区域。
-                compactTopBar
-                    .frame(height: topH)
-                    .clipped()
-                    .opacity(topH > 0 ? 1 : 0)
-                    .allowsHitTesting(topH > 0)
+                // 小窗三段式：控制条在布局流里各占一段，与视频区物理隔离。
+                // 注意：这里不能用 frame(height:).clipped() 收起来 ——
+                // 那套组合会把命中区域一起裁掉，按钮就点不动了。
+                // 收起的做法是让视图不参与布局（if 条件），而不是把它压扁。
+                if !isFull && barsVisible {
+                    compactTopBar
+                }
 
                 videoLayer(size: videoSize)
 
-                compactBottomBar
-                    .frame(height: botH)
-                    .clipped()
-                    .opacity(botH > 0 ? 1 : 0)
-                    .allowsHitTesting(botH > 0)
+                if !isFull && barsVisible {
+                    compactBottomBar
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .overlay(alignment: .top) {
