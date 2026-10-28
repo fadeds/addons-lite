@@ -25,6 +25,8 @@ struct PlayerView: View {
     @State private var dragMode: DragMode = .none
     @State private var dragAnchor: Double = 0
     @State private var seekTarget: Double = 0
+    /// 本次拖动的起点（用于判断左右半屏）
+    @State private var dragStart: CGPoint = .zero
     /// 小窗拖动的起始偏移（手势开始时记录）
     @State private var windowDragAnchor: CGSize?
 
@@ -54,7 +56,6 @@ struct PlayerView: View {
             let topH = isFull ? 0 : PlayerLayout.topBar
             let botH = isFull ? 0 : PlayerLayout.bottomBar
             let videoH = max(geo.size.height - topH - botH, 1)
-            let videoSize = CGSize(width: geo.size.width, height: videoH)
 
             // 结构以 v0.1.40 为基准（那版用户确认过小窗顶栏可点）：
             // ZStack + 显式 zIndex 分层，控制层整块压在 10 上。
@@ -71,7 +72,7 @@ struct PlayerView: View {
                     .clipped()
                     .zIndex(1)
 
-                interactionLayer(size: videoSize)
+                interactionLayer()
                     .frame(width: geo.size.width, height: videoH)
                     .padding(.top, topH)
                     .zIndex(2)
@@ -140,26 +141,51 @@ struct PlayerView: View {
 
     // MARK: - 布局
 
-    /// 视频区手势层：双击播放/暂停；全屏时拖动调进度/亮度/音量
-    private func interactionLayer(size: CGSize) -> some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .gesture(videoGesture(size: size))
-            .onTapGesture(count: 2) { model.togglePlay() }
+    /// 视频区手势层：横向滑调进度、左半竖滑调亮度、右半竖滑调音量、双击暂停
+    private func interactionLayer() -> some View {
+        PlayerGestureLayer(
+            onPanBegan: { _, start in
+                dragStart = start
+                dragMode = .none
+            },
+            onPanChanged: handlePanChanged(size:dx:dy:),
+            onPanEnded: handlePanEnded,
+            onSingleTap: {},
+            onDoubleTap: { model.togglePlay() }
+        )
     }
 
     // MARK: - 顶栏
 
     private var compactTopBar: some View {
         HStack(spacing: 6) {
-            // 拖动手柄：拖拽只在这 30pt 宽的区域生效。
-            // 之前把 DragGesture 包在整窗上，会把顶栏/底栏按钮的 tap 全部吞掉。
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white.opacity(0.7))
-                .frame(width: 30, height: PlayerLayout.topBar)
-                .contentShape(Rectangle())
-                .gesture(windowDragGesture)
+            // 拖动手柄：只有这 30pt 宽的区域能拖窗口。
+            // 用 UIKit 识别器，和视频区手势同一套机制。
+            ZStack {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .allowsHitTesting(false)
+
+                PlayerDragHandle(
+                    onChanged: { dx, dy in
+                        if windowDragAnchor == nil { windowDragAnchor = windowOffset }
+                        let start = windowDragAnchor ?? windowOffset
+                        var next = CGSize(
+                            width: start.width + dx,
+                            height: start.height + dy
+                        )
+                        next.width = min(
+                            max(next.width, -windowOffsetLimit.width),
+                            windowOffsetLimit.width
+                        )
+                        next.height = min(max(next.height, 0), windowOffsetLimit.height)
+                        onWindowOffsetChange(next)
+                    },
+                    onEnded: { windowDragAnchor = nil }
+                )
+            }
+            .frame(width: 30, height: PlayerLayout.topBar)
 
             Text(displayName)
                 .font(.system(size: 11))
@@ -184,23 +210,6 @@ struct PlayerView: View {
         .padding(.horizontal, 10)
         .frame(height: PlayerLayout.topBar)
         .background(Color.black.opacity(0.5))
-    }
-
-    /// 小窗拖动：只挂在顶栏手柄上
-    private var windowDragGesture: some Gesture {
-        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-            .onChanged { value in
-                if windowDragAnchor == nil { windowDragAnchor = windowOffset }
-                let start = windowDragAnchor ?? windowOffset
-                var next = CGSize(
-                    width: start.width + value.translation.width,
-                    height: start.height + value.translation.height
-                )
-                next.width = min(max(next.width, -windowOffsetLimit.width), windowOffsetLimit.width)
-                next.height = min(max(next.height, 0), windowOffsetLimit.height)
-                onWindowOffsetChange(next)
-            }
-            .onEnded { _ in windowDragAnchor = nil }
     }
 
     private var fullTopBar: some View {
@@ -412,78 +421,74 @@ struct PlayerView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: - 手势（全屏：进度、亮度、音量）
+    // MARK: - 手势（进度、亮度、音量）
 
-    private func videoGesture(size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 6, coordinateSpace: .local)
-            .onChanged { value in
-                // 只服务于全屏的进度/亮度/音量；小窗不挂这个手势
-                guard isFull else { return }
-                if dragMode == .none {
-                    let dx = value.translation.width
-                    let dy = value.translation.height
-                    if abs(dx) > abs(dy) * 1.2 {
-                        dragMode = .seek
-                        dragAnchor = model.progress
-                        seekTarget = model.progress
-                    } else if value.startLocation.x < size.width / 2 {
-                        dragMode = .brightness
-                        dragAnchor = Double(currentBrightness)
-                    } else {
-                        dragMode = .volume
-                        dragAnchor = Double(SystemVolume.shared.value)
-                    }
-                }
-
-                switch dragMode {
-                case .seek:
-                    guard model.duration > 0 else { return }
-                    let delta = Double(value.translation.width / max(size.width, 1))
-                    let target = min(max(dragAnchor + delta, 0), 1)
-                    seekTarget = target
-                    hud.show(
-                        HUDContent(
-                            icon: delta >= 0 ? "goforward" : "gobackward",
-                            text: "\(PlayerModel.formatTime(target * model.duration)) / \(model.durationText)",
-                            progress: target
-                        )
-                    )
-
-                case .brightness:
-                    let delta = -Double(value.translation.height / max(size.height, 1))
-                    let level = min(max(dragAnchor + delta, 0), 1)
-                    setBrightness(CGFloat(level))
-                    hud.show(
-                        HUDContent(
-                            icon: "sun.max.fill",
-                            text: "亮度 \(Int(level * 100))%",
-                            progress: level
-                        )
-                    )
-
-                case .volume:
-                    let delta = -Double(value.translation.height / max(size.height, 1))
-                    let level = min(max(dragAnchor + delta, 0), 1)
-                    SystemVolume.shared.set(Float(level))
-                    hud.show(
-                        HUDContent(
-                            icon: level <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                            text: "音量 \(Int(level * 100))%",
-                            progress: level
-                        )
-                    )
-
-                case .none:
-                    break
-                }
+    /// 由 UIKit 手势层回调：根据首次位移方向决定这一次拖动是调什么
+    private func handlePanChanged(size: CGSize, dx: CGFloat, dy: CGFloat) {
+        if dragMode == .none {
+            if abs(dx) > abs(dy) * 1.2 {
+                dragMode = .seek
+                dragAnchor = model.progress
+                seekTarget = model.progress
+                model.beginScrub()
+            } else if dragStart.x < size.width / 2 {
+                dragMode = .brightness
+                dragAnchor = Double(currentBrightness)
+            } else {
+                dragMode = .volume
+                dragAnchor = Double(SystemVolume.shared.value)
             }
-            .onEnded { _ in
-                guard isFull else { return }
-                if dragMode == .seek {
-                    model.seek(to: seekTarget)
-                }
-                dragMode = .none
-            }
+        }
+
+        switch dragMode {
+        case .seek:
+            guard model.duration > 0 else { return }
+            let delta = Double(dx / max(size.width, 1))
+            let target = min(max(dragAnchor + delta, 0), 1)
+            seekTarget = target
+            hud.show(
+                HUDContent(
+                    icon: delta >= 0 ? "goforward" : "gobackward",
+                    text: "\(PlayerModel.formatTime(target * model.duration)) / \(model.durationText)",
+                    progress: target
+                )
+            )
+
+        case .brightness:
+            let delta = -Double(dy / max(size.height, 1))
+            let level = min(max(dragAnchor + delta, 0), 1)
+            setBrightness(CGFloat(level))
+            hud.show(
+                HUDContent(
+                    icon: "sun.max.fill",
+                    text: "亮度 \(Int(level * 100))%",
+                    progress: level
+                )
+            )
+
+        case .volume:
+            let delta = -Double(dy / max(size.height, 1))
+            let level = min(max(dragAnchor + delta, 0), 1)
+            SystemVolume.shared.set(Float(level))
+            hud.show(
+                HUDContent(
+                    icon: level <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                    text: "音量 \(Int(level * 100))%",
+                    progress: level
+                )
+            )
+
+        case .none:
+            break
+        }
+    }
+
+    private func handlePanEnded() {
+        if dragMode == .seek {
+            model.seek(to: seekTarget)
+            model.endScrub()
+        }
+        dragMode = .none
     }
 
     private var currentBrightness: CGFloat {
