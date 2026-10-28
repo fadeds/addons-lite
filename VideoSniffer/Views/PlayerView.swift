@@ -168,17 +168,31 @@ struct PlayerView: View {
 
             Spacer(minLength: 6)
 
-            iconButton("arrow.up.left.and.arrow.down.right") {
+            // 不用 Button：改用 onTapGesture 直接处理，
+            // 并在动作里加一条 toast，便于确认触摸是否真的到达这一层。
+            tapIcon("arrow.up.left.and.arrow.down.right") {
+                appState.showToast("进全屏")
                 appState.playerMode = .full
             }
 
-            iconButton("xmark") { close() }
+            tapIcon("xmark") {
+                appState.showToast("关闭播放器")
+                close()
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
         .frame(height: PlayerLayout.topBar)
         .background(Color.black.opacity(0.5))
         .contentShape(Rectangle())
+    }
+
+    private func tapIcon(_ name: String, action: @escaping () -> Void) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 12, weight: .bold))
+            .frame(width: 34, height: PlayerLayout.topBar)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
     }
 
     /// 小窗拖动：只挂在顶栏手柄上
@@ -200,12 +214,15 @@ struct PlayerView: View {
 
     private var fullTopBar: some View {
         HStack(spacing: 12) {
-            Button { close() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .frame(width: 34, height: 34)
-                    .background(.black.opacity(0.4), in: Circle())
-            }
+            Image(systemName: "xmark")
+                .font(.system(size: 14, weight: .bold))
+                .frame(width: 40, height: 40)
+                .background(.black.opacity(0.4), in: Circle())
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    appState.showToast("关闭播放器")
+                    close()
+                }
 
             Text(displayName)
                 .font(.footnote)
@@ -214,15 +231,16 @@ struct PlayerView: View {
 
             Spacer(minLength: 8)
 
-            Button {
-                appState.playerMode = .mini
-            } label: {
-                Text("小窗")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.vertical, 7)
-                    .padding(.horizontal, 14)
-                    .background(.black.opacity(0.4), in: Capsule())
-            }
+            Text("小窗")
+                .font(.footnote.weight(.semibold))
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .background(.black.opacity(0.4), in: Capsule())
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    appState.showToast("回到小窗")
+                    appState.playerMode = .mini
+                }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 40)
@@ -242,12 +260,14 @@ struct PlayerView: View {
     /// 小窗/宽窗底栏：进度条常显 + 倍速
     private var compactBottomBar: some View {
         HStack(spacing: 8) {
-            Button { model.togglePlay() } label: {
-                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
+            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: 30, height: PlayerLayout.bottomBar)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    appState.showToast(model.isPlaying ? "暂停" : "播放")
+                    model.togglePlay()
+                }
 
             progressSlider
 
@@ -292,12 +312,14 @@ struct PlayerView: View {
                 .padding(.horizontal, 4)
 
             HStack(spacing: 16) {
-                Button { model.togglePlay() } label: {
-                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title3)
-                        .frame(width: 34, height: 30)
-                        .contentShape(Rectangle())
-                }
+                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.title3)
+                    .frame(width: 44, height: 36)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        appState.showToast(model.isPlaying ? "暂停" : "播放")
+                        model.togglePlay()
+                    }
 
                 Text("\(model.timeText) / \(model.durationText)")
                     .font(.caption.monospacedDigit())
@@ -363,15 +385,6 @@ struct PlayerView: View {
                 .padding(.vertical, 6)
                 .padding(.horizontal, 8)
                 .background(.black.opacity(0.45), in: Capsule())
-        }
-    }
-
-    private func iconButton(_ systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 11, weight: .bold))
-                .frame(width: 26, height: 26)
-                .contentShape(Rectangle())
         }
     }
 
