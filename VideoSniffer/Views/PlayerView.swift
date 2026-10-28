@@ -16,10 +16,6 @@ struct PlayerView: View {
     var windowOffsetLimit: CGSize = .zero
     var onWindowOffsetChange: (CGSize) -> Void = { _ in }
 
-    /// 工具栏显隐由宿主持有：小窗隐藏时窗口高度也要跟着收缩，
-    /// 否则点不到的那两条黑边会一直挡在视频上下
-    @Binding var barsVisible: Bool
-
     @EnvironmentObject private var appState: AppState
     @StateObject private var model: PlayerModel
     @StateObject private var hud = HUDCenter()
@@ -39,7 +35,6 @@ struct PlayerView: View {
         referer: String? = nil,
         windowOffset: CGSize = .zero,
         windowOffsetLimit: CGSize = .zero,
-        barsVisible: Binding<Bool>,
         onWindowOffsetChange: @escaping (CGSize) -> Void = { _ in }
     ) {
         self.url = url
@@ -47,7 +42,6 @@ struct PlayerView: View {
         self.windowOffset = windowOffset
         self.windowOffsetLimit = windowOffsetLimit
         self.onWindowOffsetChange = onWindowOffsetChange
-        _barsVisible = barsVisible
         _model = StateObject(wrappedValue: PlayerModel(url: url, referer: referer))
     }
 
@@ -57,41 +51,69 @@ struct PlayerView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let topH = (isFull || !barsVisible) ? 0 : PlayerLayout.topBar
-            let botH = (isFull || !barsVisible) ? 0 : PlayerLayout.bottomBar
+            let topH = isFull ? 0 : PlayerLayout.topBar
+            let botH = isFull ? 0 : PlayerLayout.bottomBar
             let videoH = max(geo.size.height - topH - botH, 1)
             let videoSize = CGSize(width: geo.size.width, height: videoH)
 
-            VStack(spacing: 0) {
-                // 小窗三段式：控制条在布局流里各占一段，与视频区物理隔离。
-                // 注意：这里不能用 frame(height:).clipped() 收起来 ——
-                // 那套组合会把命中区域一起裁掉，按钮就点不动了。
-                // 收起的做法是让视图不参与布局（if 条件），而不是把它压扁。
-                if !isFull && barsVisible {
-                    compactTopBar
+            // 结构以 v0.1.40 为基准（那版用户确认过小窗顶栏可点）：
+            // ZStack + 显式 zIndex 分层，控制层整块压在 10 上。
+            ZStack(alignment: .top) {
+                Color.black
+                    .zIndex(0)
+
+                // 渲染层全树唯一实例：按 mode 拆成两棵子树会让 KSPlayer 的
+                // UIView 被搬家，画面冻结但音频继续。
+                PlayerSurface(player: model.layer)
+                    .frame(width: geo.size.width, height: videoH)
+                    .padding(.top, topH)
+                    .allowsHitTesting(false)
+                    .clipped()
+                    .zIndex(1)
+
+                interactionLayer(size: videoSize)
+                    .frame(width: geo.size.width, height: videoH)
+                    .padding(.top, topH)
+                    .zIndex(2)
+
+                statusOverlay
+                    .frame(width: geo.size.width, height: videoH)
+                    .padding(.top, topH)
+                    .allowsHitTesting(false)
+                    .zIndex(3)
+
+                if let content = hud.content {
+                    hudView(content)
+                        .frame(width: geo.size.width, height: videoH)
+                        .padding(.top, topH)
+                        .zIndex(4)
                 }
 
-                videoLayer(size: videoSize)
+                if isFull {
+                    VStack(spacing: 0) {
+                        fullTopBar
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .zIndex(10)
 
-                if !isFull && barsVisible {
-                    compactBottomBar
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        fullBottomBar
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .zIndex(10)
+                } else {
+                    VStack(spacing: 0) {
+                        compactTopBar
+                        Spacer(minLength: 0)
+                        compactBottomBar
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .zIndex(10)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .overlay(alignment: .top) {
-                if isFull {
-                    fullTopBar
-                        .opacity(barsVisible ? 1 : 0)
-                        .allowsHitTesting(barsVisible)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if isFull {
-                    fullBottomBar
-                        .opacity(barsVisible ? 1 : 0)
-                        .allowsHitTesting(barsVisible)
-                }
-            }
             .clipShape(
                 RoundedRectangle(cornerRadius: isFull ? 0 : 12, style: .continuous)
             )
@@ -108,7 +130,6 @@ struct PlayerView: View {
         .onAppear(perform: handleAppear)
         .onDisappear(perform: handleDisappear)
         .onChange(of: appState.playerMode) { mode in
-            barsVisible = true
             if mode == .full {
                 OrientationManager.shared.lockLandscape()
             } else {
@@ -119,49 +140,12 @@ struct PlayerView: View {
 
     // MARK: - 布局
 
-    /// 视频层：渲染 + 手势 + 状态覆盖，不含任何控制条。
-    /// PlayerSurface 全树只有这一个实例，切形态时不会被搬走（搬家会导致画面冻结）。
-    private func videoLayer(size: CGSize) -> some View {
-        ZStack {
-            Color.black
-            PlayerSurface(player: model.layer)
-                .allowsHitTesting(false)
-            interactionLayer(size: size)
-            statusOverlay
-                .allowsHitTesting(false)
-            if let content = hud.content {
-                hudView(content)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-    }
-
-    /// 视频区手势层：
-    /// - 双击：播放 / 暂停
-    /// - 单击：显示 / 隐藏顶栏和底栏
-    @ViewBuilder
+    /// 视频区手势层：双击播放/暂停；全屏时拖动调进度/亮度/音量
     private func interactionLayer(size: CGSize) -> some View {
-        if isFull {
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(videoGesture(size: size))
-                .onTapGesture(count: 2) { model.togglePlay() }
-                .onTapGesture { toggleBars() }
-        } else {
-            // 小窗：单击唤回/收起工具栏。收起后视频区铺满整个窗口，
-            // 所以"点哪里都能唤回"，不存在点不到的黑边。
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) { model.togglePlay() }
-                .onTapGesture { toggleBars() }
-        }
-    }
-
-    private func toggleBars() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            barsVisible.toggle()
-        }
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(videoGesture(size: size))
+            .onTapGesture(count: 2) { model.togglePlay() }
     }
 
     // MARK: - 顶栏
@@ -551,15 +535,13 @@ enum PlayerLayout {
     static let topBar: CGFloat = 32
     static let bottomBar: CGFloat = 40
 
-    static func size(mode: PlayerMode, container: CGSize, showsBars: Bool = true) -> CGSize {
+    static func size(mode: PlayerMode, container: CGSize) -> CGSize {
         switch mode {
         case .mini:
-            // 小窗充满宽度（左右各留 12pt），高度按 16:9 + 控制条；
-            // 控制条收起时窗口同步变矮，视频区铺满整个窗口
+            // 小窗充满宽度（左右各留 12pt），高度按 16:9 + 控制条
             let width = max(container.width - 24, 200)
             let video = (width * 9 / 16).rounded()
-            let bars: CGFloat = showsBars ? (topBar + bottomBar) : 0
-            return CGSize(width: width, height: video + bars)
+            return CGSize(width: width, height: video + topBar + bottomBar)
         case .full:
             return container
         }
